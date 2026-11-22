@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Chaos Rift Entertainment, LLC and the Stem DAWg contributors
+//
+// Windows resources: the multi-size application icon (Explorer, desktop
+// shortcuts, pinned taskbar, Alt+Tab) and version information shown in the
+// file's Properties dialog. Configured by CMake.
+
+#include <winver.h>
+
+IDI_ICON1 ICON "@DAW_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Chaos Rift Entertainment, LLC"
+            VALUE "FileDescription",  "Stem DAWg - music cleaner and mastering"
+            VALUE "FileVersion",      "@PROJECT_VERSION@"
+            VALUE "InternalName",     "StemDAWg"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Chaos Rift Entertainment, LLC and the Stem DAWg contributors. AGPL-3.0-or-later."
+            VALUE "OriginalFilename", "StemDAWg.exe"
+            VALUE "ProductName",      "Stem DAWg"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

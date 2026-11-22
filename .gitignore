@@ -1,0 +1,18 @@
+# Build trees and logs
+/build/
+/out/
+/build-*.log
+/test-*.log
+
+# Machine-specific CMake presets
+CMakeUserPresets.json
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Runtime artefacts that must never be committed
+*.peaks
+Backups/

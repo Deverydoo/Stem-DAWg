@@ -1,0 +1,107 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{DAW_QT_DIR}"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "vs2022",
+      "displayName": "VS 2022 x64 (Qt from DAW_QT_DIR)",
+      "description": "App + tests. Set DAW_QT_DIR to e.g. C:/Qt/6.12.0/msvc2022_64, or use a CMakeUserPresets.json.",
+      "inherits": "windows-base"
+    },
+    {
+      "name": "vs2022-headless",
+      "displayName": "VS 2022 x64, engine + tests only (no Qt)",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "DAW_BUILD_APP": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "vs2022",
+      "configuration": "Release"
+    },
+    {
+      "name": "headless-debug",
+      "configurePreset": "vs2022-headless",
+      "configuration": "Debug"
+    },
+    {
+      "name": "headless-release",
+      "configurePreset": "vs2022-headless",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "vs2022",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 6
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "vs2022",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 6
+      }
+    },
+    {
+      "name": "headless-debug",
+      "configurePreset": "vs2022-headless",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 6
+      }
+    },
+    {
+      "name": "headless-release",
+      "configurePreset": "vs2022-headless",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4
+      }
+    }
+  ]
+}

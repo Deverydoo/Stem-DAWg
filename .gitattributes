@@ -1,0 +1,7 @@
+# Normalise line endings for text; never touch binaries.
+* text=auto
+
+*.png binary
+*.ico binary
+*.jpg binary
+*.wav binary
