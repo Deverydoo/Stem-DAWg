@@ -82,12 +82,21 @@ TEST_CASE("Engine runs concurrently with a control thread publishing snapshots",
             engine.process(outs, 2, 256);
     });
 
+    // Only start publishing once the audio thread is really running, and keep it
+    // running until it has adopted the last snapshot. Without this the test can
+    // finish before the OS ever schedules the audio thread (seen on CI runners)
+    // and would then test nothing.
+    while (engine.diagnostics().callbacks == 0)
+        std::this_thread::yield();
     for (std::uint64_t v = 2; v < 2000; ++v) {
         engine.publishSnapshot(singleClipSnapshot(asset, static_cast<std::int64_t>(v % 100), 0, 48000, v));
         engine.collectGarbage();
         if (v % 50 == 0)
             engine.seek(static_cast<std::int64_t>(v));
     }
+    const std::uint64_t afterPublishing = engine.diagnostics().callbacks;
+    while (engine.diagnostics().callbacks < afterPublishing + 200)
+        std::this_thread::yield();
     running = false;
     audio.join();
     engine.endProcessing();
@@ -96,7 +105,7 @@ TEST_CASE("Engine runs concurrently with a control thread publishing snapshots",
     const auto d = engine.diagnostics();
     REQUIRE(d.snapshotLeaks == 0);
     REQUIRE(d.droppedCommands == 0);
-    REQUIRE(d.callbacks > 0);
+    REQUIRE(d.snapshotSwaps >= 2); // the first snapshot and (at least) the final one were adopted
 }
 
 TEST_CASE("Mixer gain ramps and track re-matching never touch the heap", "[engine][rt][mixer]")
