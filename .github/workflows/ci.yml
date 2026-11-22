@@ -26,12 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache downloaded dependencies
-        uses: actions/cache@v4
-        with:
-          path: build/vs2022-headless/_deps/*-subbuild
-          key: deps-${{ hashFiles('cmake/*.cmake') }}
-
+      # Dependencies (JUCE, ONNX Runtime, json, Catch2) are downloaded fresh by
+      # FetchContent each run. Do not cache only the *-subbuild folders: their
+      # stamp files would make CMake skip a download whose files are missing.
       - name: Configure
         run: cmake --preset vs2022-headless
 
