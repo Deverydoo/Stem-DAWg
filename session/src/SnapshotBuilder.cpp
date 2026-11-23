@@ -49,6 +49,9 @@ CleanupParams cleanupParams(const TrackCleanup& cleanup) noexcept
     p.denoise = c.denoise.enabled;
     p.denoiseReductionDb = static_cast<float>(c.denoise.reductionDb);
     p.denoiseSensitivityDb = static_cast<float>(c.denoise.sensitivityDb);
+    p.transient = c.transient.enabled;
+    p.transientAttackDb = static_cast<float>(c.transient.attackDb);
+    p.transientSustainDb = static_cast<float>(c.transient.sustainDb);
     return p;
 }
 

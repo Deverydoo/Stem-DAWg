@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <random>
 
 using namespace daw;
 using namespace daw::test;
@@ -316,4 +317,70 @@ TEST_CASE("Advice rules: a small low-end stem and Suno's Other stem", "[session]
     report.advice = adviseStems(report);
     REQUIRE(findAdvice(report, "mix-ceiling") != nullptr);
     CHECK(findAdvice(report, "mix-ceiling")->severity == AdviceSeverity::Suggestion);
+}
+
+namespace {
+
+/// Noise hits every 250 ms that rise linearly over `riseMs` and decay with a
+/// 60 ms time constant, over a bed 60 dB down.
+std::shared_ptr<AudioAsset> hits(double riseMs, unsigned seed)
+{
+    const auto frames = static_cast<std::int64_t>(kSeconds * kRate);
+    auto asset = AudioAsset::create(2, frames, kRate);
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> noise(-1.0f, 1.0f);
+    const double rise = riseMs * 0.001 * kRate;
+    const auto spacing = static_cast<std::int64_t>(0.25 * kRate);
+    for (std::int64_t i = 0; i < frames; ++i) {
+        const auto t = static_cast<double>(i % spacing);
+        const double envelope = 0.5 * (t < rise ? t / rise : std::exp(-(t - rise) / (0.06 * kRate)));
+        for (auto& channel : asset->channels)
+            channel[static_cast<std::size_t>(i)] = static_cast<float>(envelope + 0.0005) * noise(rng);
+    }
+    return asset;
+}
+
+} // namespace
+
+TEST_CASE("Stem report measures attack times and suggests the transient shaper for soft drums", "[session][stems][transient]")
+{
+    Fixture f;
+    f.model.sampleRate = kRate;
+    const std::size_t drums = f.add("Drums", hits(5.0, 1));
+    const std::size_t hats = f.add("Hi Hats", hits(0.0, 2));
+    const std::size_t vocal = f.add("Lead Vocals", hits(5.0, 3));
+
+    const auto result = analyzeStems(f.model, f.pool);
+    REQUIRE(result.ok());
+    const StemReport& before = *result;
+    // A 5 ms linear rise measures about 4 ms from 10 % to 90 %; an instant one under 1 ms.
+    REQUIRE(before.tracks[drums].attackMs.has_value());
+    CHECK(*before.tracks[drums].attackMs > 3.0);
+    CHECK(*before.tracks[drums].attackMs < 5.0);
+    REQUIRE(before.tracks[hats].attackMs.has_value());
+    CHECK(*before.tracks[hats].attackMs < 1.0);
+    CHECK(before.tracks[drums].hitsPerMinute == Approx(240.0).margin(12.0));
+
+    // Only the soft drum stem gets the advice: the hats are sharp already, and
+    // a vocal's slow consonants are not drums.
+    const StemAdvice* soft = findAdvice(before, "soft-attacks", drums);
+    REQUIRE(soft != nullptr);
+    REQUIRE(soft->fixes.size() == 1);
+    REQUIRE(soft->fixes[0].transient.has_value());
+    CHECK(soft->fixes[0].transient->enabled);
+    CHECK(soft->fixes[0].transient->attackDb > 0.0);
+    CHECK(findAdvice(before, "soft-attacks", hats) == nullptr);
+    CHECK(findAdvice(before, "soft-attacks", vocal) == nullptr);
+    CHECK(describeCleanup(soft->fixes[0].applyTo({})).find("transients") != std::string::npos);
+
+    // Applied, the hits rise faster and the advice is gone. Their level never
+    // passes the top they head for; single samples of a noise hit may poke
+    // out by about a dB (0.1 dB on a real drum stem).
+    CHECK(applyCleanupFixes(f.model, before, soft->fixes) == 1);
+    const auto after = analyzeStems(f.model, f.pool);
+    REQUIRE(after.ok());
+    REQUIRE(after->tracks[drums].attackMs.has_value());
+    CHECK(*after->tracks[drums].attackMs < 0.75 * *before.tracks[drums].attackMs);
+    CHECK(after->tracks[drums].loudness.samplePeakDbfs < before.tracks[drums].loudness.samplePeakDbfs + 1.5);
+    CHECK(findAdvice(*after, "soft-attacks", drums) == nullptr);
 }

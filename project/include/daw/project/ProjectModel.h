@@ -118,8 +118,21 @@ struct DenoiseSettings {
     friend bool operator==(const DenoiseSettings&, const DenoiseSettings&) = default;
 };
 
+/// Transient shaper: turns the start of each hit (attack) and the decay after
+/// it (sustain) up or down, at any level. A positive attack restores the snap
+/// AI-generated drums lose.
+struct TransientSettings {
+    static constexpr double kMaxDb = 12.0;
+
+    bool enabled = false;
+    double attackDb = 6.0;  // -12 .. +12
+    double sustainDb = 0.0; // -12 .. +12
+
+    friend bool operator==(const TransientSettings&, const TransientSettings&) = default;
+};
+
 /// Non-destructive per-track clean-up, applied before the fader in this order:
-/// DC removal, high-pass, hum removal, noise reduction, expander.
+/// DC removal, high-pass, hum removal, noise reduction, expander, transient shaper.
 struct TrackCleanup {
     bool bypassed = false; // keeps the settings but plays the track unprocessed
     bool dcRemoval = false;
@@ -127,11 +140,12 @@ struct TrackCleanup {
     HumSettings hum;
     DenoiseSettings denoise;
     ExpanderSettings expander;
+    TransientSettings transient;
 
     /// True when any stage is switched on (regardless of bypass).
     bool hasStages() const noexcept
     {
-        return dcRemoval || highPass.enabled || hum.enabled || denoise.enabled || expander.enabled;
+        return dcRemoval || highPass.enabled || hum.enabled || denoise.enabled || expander.enabled || transient.enabled;
     }
     /// True when the chain changes the sound.
     bool active() const noexcept { return !bypassed && hasStages(); }

@@ -5,6 +5,7 @@
 
 #include "BlockWorkers.h"
 
+#include <daw/dsp/Biquad.h>
 #include <daw/dsp/Fft.h>
 #include <daw/engine/AudioEngine.h>
 #include <daw/project/ProjectSerializer.h>
@@ -12,6 +13,7 @@
 #include <daw/session/SnapshotBuilder.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -51,6 +53,22 @@ constexpr double kOutOfPhase = -0.2;
 constexpr double kMonoCorrelation = 0.999;
 constexpr double kAudibleShare = 0.01;          // below 1 % of the mix a stem's problems are minor
 
+// Attack measurement: 0.5 ms RMS frames of the mid signal above kAttackBandHz.
+constexpr double kAttackFrameMs = 0.5;
+constexpr int kAttackRing = 64;           // frames kept (32 ms)
+constexpr int kAttackPeakBefore = 20;     // a hit's peak is the highest frame 10 ms before ...
+constexpr int kAttackPeakAfter = 10;      // ... and 5 ms after it
+constexpr int kAttackFootFrames = 30;     // its foot is the lowest frame in the 15 ms before the peak
+constexpr double kAttackMinJumpDb = 15.0;
+constexpr int kAttackMinSpacing = 60;     // frames (30 ms) between hits
+constexpr double kAttackLoudRangeDb = 12.0; // hits this close to the loudest count
+constexpr std::size_t kAttackMinHits = 20;
+constexpr float kAttackSilenceDb = -200.0f;
+// Drum stems whose hits rise slower than this get the transient shaper
+// suggested. Tuned on real Suno drum stems (about 3 ms); see docs/milestone-4.
+constexpr double kSoftAttackMs = 2.0;
+constexpr double kSoftAttackGainDb = 6.0;
+
 std::string format(const char* pattern, ...)
 {
     char buffer[512];
@@ -71,6 +89,17 @@ bool containsWord(std::string text, const std::string& word)
         if (startOk && endOk)
             return true;
     }
+    return false;
+}
+
+// Stems named for drums or percussion (Suno names its stems; a measured
+// attack time alone cannot tell drums from consonants or plucks).
+bool isPercussionStem(const std::string& name)
+{
+    for (const char* word : {"drum", "drums", "percussion", "perc", "kick", "kicks", "snare", "snares", "hat", "hats", "hihat",
+                             "hihats", "cymbal", "cymbals", "toms", "beat", "beats"})
+        if (containsWord(name, word))
+            return true;
     return false;
 }
 
@@ -101,7 +130,67 @@ struct TrackState {
     std::vector<double> binPower;               // accumulated |X|^2 per bin
     std::vector<std::complex<float>> spectrum;  // current frame
     bool frameHasSignal = false;
+
+    // Attacks.
+    Biquad attackFilter;
+    double attackPower = 0.0;
+    int attackPosition = 0;
+    std::array<float, kAttackRing> attackDb{}; // ring of frame levels, indexed by frame number
+    std::int64_t attackFrames = 0;
+    std::int64_t lastHit = -kAttackMinSpacing;
+    std::vector<std::array<float, 2>> hits;   // {rise ms, peak dB}
+
+    float levelAt(std::int64_t frame) const { return attackDb[static_cast<std::size_t>(frame % kAttackRing)]; }
+    void addAttackFrame(float db);
 };
+
+double amplitude(float db)
+{
+    return db <= kAttackSilenceDb ? 0.0 : std::pow(10.0, db / 20.0);
+}
+
+// Called for every 0.5 ms frame; looks for a hit peaking kAttackPeakAfter frames ago.
+void TrackState::addAttackFrame(float db)
+{
+    attackDb[static_cast<std::size_t>(attackFrames % kAttackRing)] = db;
+    ++attackFrames;
+    const std::int64_t peak = attackFrames - 1 - kAttackPeakAfter;
+    if (peak - kAttackFootFrames < 0 || peak - lastHit < kAttackMinSpacing)
+        return;
+    const float top = levelAt(peak);
+    for (std::int64_t k = peak - kAttackPeakBefore; k < peak; ++k)
+        if (levelAt(k) >= top)
+            return;
+    for (std::int64_t k = peak + 1; k <= peak + kAttackPeakAfter; ++k)
+        if (levelAt(k) > top)
+            return;
+    std::int64_t foot = peak;
+    for (std::int64_t k = peak - kAttackFootFrames; k < peak; ++k)
+        if (levelAt(k) < levelAt(foot))
+            foot = k;
+    if (top - levelAt(foot) < kAttackMinJumpDb)
+        return;
+
+    // 10 % and 90 % of the jump, in amplitude, interpolated between frames.
+    // The top is the peak frame averaged with its neighbours: on noisy hits
+    // (snares, hats) a single frame is an extreme the rise never really reaches.
+    const double low = amplitude(levelAt(foot));
+    const double high = (amplitude(levelAt(peak - 1)) + amplitude(top) + amplitude(levelAt(peak + 1))) / 3.0;
+    const double at10 = low + 0.1 * (high - low);
+    const double at90 = low + 0.9 * (high - low);
+    std::int64_t k90 = foot + 1;
+    while (k90 < peak && amplitude(levelAt(k90)) < at90)
+        ++k90;
+    const double a90 = amplitude(levelAt(k90)), b90 = amplitude(levelAt(k90 - 1));
+    const double t90 = static_cast<double>(k90 - 1) + (a90 > b90 ? (at90 - b90) / (a90 - b90) : 1.0);
+    std::int64_t k10 = k90 - 1;
+    while (k10 > foot && amplitude(levelAt(k10)) >= at10)
+        --k10;
+    const double a10 = amplitude(levelAt(k10)), b10 = amplitude(levelAt(k10 + 1));
+    const double t10 = static_cast<double>(k10) + (b10 > a10 ? (at10 - a10) / (b10 - a10) : 0.0);
+    hits.push_back({static_cast<float>(std::max(0.0, t90 - t10) * kAttackFrameMs), top});
+    lastHit = peak;
+}
 
 std::unique_ptr<AudioEngine> makeEngine(const ProjectModel& model, const MediaPool& media, double rate)
 {
@@ -172,6 +261,8 @@ TrackCleanup CleanupFix::applyTo(TrackCleanup cleanup) const
         cleanup.highPass = *highPass;
     if (expander)
         cleanup.expander = *expander;
+    if (transient)
+        cleanup.transient = *transient;
     cleanup.clamp();
     return cleanup;
 }
@@ -222,7 +313,10 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
         t.binPower.assign(kBlock / 2 + 1, 0.0);
         t.spectrum.resize(kBlock);
         t.frameDb.reserve(static_cast<std::size_t>(static_cast<double>(total) / (kFrameSeconds * rate)) + 2);
+        t.attackFilter.setCoefficients(BiquadCoefficients::highPass(std::min(kAttackBandHz, 0.4 * rate), 0.7071, rate));
+        t.attackDb.fill(kAttackSilenceDb);
     }
+    const int attackFrameLength = std::max(1, static_cast<int>(std::lround(kAttackFrameMs * 0.001 * rate)));
     auto mixEngine = makeEngine(model, media, rate);
     LoudnessMeter mixMeter;
     mixMeter.prepare(rate, 2, true);
@@ -290,6 +384,15 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
                 t.framePosition = 0;
             }
             t.spectrum[static_cast<std::size_t>(i)] = {static_cast<float>(mid) * window[static_cast<std::size_t>(i)], 0.0f};
+
+            const double high = t.attackFilter.process(mid);
+            t.attackPower += high * high;
+            if (++t.attackPosition == attackFrameLength) {
+                const double mean = t.attackPower / attackFrameLength;
+                t.addAttackFrame(mean > 1e-20 ? static_cast<float>(toDb(mean)) : kAttackSilenceDb);
+                t.attackPower = 0.0;
+                t.attackPosition = 0;
+            }
         }
         t.energy += frameEnergy;
         t.frameHasSignal = frameEnergy > 0.0;
@@ -407,6 +510,20 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
         for (std::size_t band = 0; band < 3; ++band)
             for (int k = pairBins[band].first; k < pairBins[band].second; ++k)
                 pairBandPower[i][band] += t.binPower[static_cast<std::size_t>(k)];
+
+        // Attacks: the loud hits only (quiet ones are ghost notes and bleed).
+        if (!t.hits.empty()) {
+            float loudest = kAttackSilenceDb;
+            for (const auto& hit : t.hits)
+                loudest = std::max(loudest, hit[1]);
+            std::vector<float> rises;
+            for (const auto& hit : t.hits)
+                if (hit[1] >= loudest - kAttackLoudRangeDb)
+                    rises.push_back(hit[0]);
+            r.hitsPerMinute = static_cast<double>(rises.size()) / (static_cast<double>(total) / rate / 60.0);
+            if (rises.size() >= kAttackMinHits)
+                r.attackMs = percentile(rises, 0.5);
+        }
         report.tracks.push_back(std::move(r));
     }
 
@@ -529,6 +646,20 @@ std::vector<StemAdvice> adviseStems(const StemReport& report)
             // threshold) drops by the full range.
             expander.ratio = 1.0 + expander.rangeDb / kExpanderMarginDb;
             advice.back().fixes.push_back({.track = i, .expander = expander});
+        }
+
+        // AI-generated drums rise to their peak slowly: soft, smeared hits.
+        const bool shaping = t.cleanup.active() && t.cleanup.transient.enabled;
+        if (!shaping && isPercussionStem(t.name) && t.attackMs && *t.attackMs >= kSoftAttackMs && t.levelShare >= kAudibleShare) {
+            add(AdviceSeverity::Suggestion, "soft-attacks", i, std::nullopt,
+                format("%s: its hits take %.1f ms to rise, where a sampled drum takes about 1 ms, so they sound soft and "
+                       "smeared. The transient shaper with %+.0f dB of attack brings the snap back.",
+                       name(i), *t.attackMs, kSoftAttackGainDb));
+            TransientSettings transient;
+            transient.enabled = true;
+            transient.attackDb = kSoftAttackGainDb;
+            transient.sustainDb = 0.0;
+            advice.back().fixes.push_back({.track = i, .transient = transient});
         }
 
         if (t.sourceOvers > 0)
@@ -705,6 +836,8 @@ std::string describeCleanup(const TrackCleanup& cleanup)
                                                : format("denoise %.0f dB", cleanup.denoise.reductionDb));
     if (cleanup.expander.enabled)
         append(format("expander %.0f dB", cleanup.expander.thresholdDb));
+    if (cleanup.transient.enabled)
+        append(format("transients %+.0f/%+.0f dB", cleanup.transient.attackDb, cleanup.transient.sustainDb));
     if (cleanup.dcRemoval)
         append("DC");
     if (!text.empty() && cleanup.bypassed)
@@ -738,6 +871,8 @@ nlohmann::json toJson(const StemReport& report)
                           {"sourceOvers", t.sourceOvers},
                           {"dcOffset", t.dcOffset},
                           {"stereoCorrelation", t.stereoCorrelation ? json(*t.stereoCorrelation) : json(nullptr)},
+                          {"hitsPerMinute", t.hitsPerMinute},
+                          {"attackMs", t.attackMs ? json(*t.attackMs) : json(nullptr)},
                           {"sideRatio", t.sideRatio},
                           {"bandShare", bands},
                           {"lowEndShare", t.lowEndShare},

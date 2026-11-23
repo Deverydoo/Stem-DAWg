@@ -330,6 +330,33 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     exForm->addRow(floor_);
     exForm->addRow(fromFloor_);
 
+    // Transient shaper.
+    transient_ = new QGroupBox(tr("Transients"), this);
+    transient_->setCheckable(true);
+    transient_->setToolTip(helpTip(tr("Transient shaper"), tr("Sharpens or softens the start of each hit and turns the decay after it up or down,\n"
+                                                              "at any level. AI-generated drums take 2-4 ms to rise to their peak, where a\n"
+                                                              "sampled hit takes about 1 ms (the stem report's Attack column): attack brings\n"
+                                                              "the snap back.")));
+    const auto shaperBox = [this](const QString& title, const QString& help) {
+        auto* box = new QDoubleSpinBox(transient_);
+        box->setRange(-daw::TransientSettings::kMaxDb, daw::TransientSettings::kMaxDb);
+        box->setDecimals(1);
+        box->setSingleStep(1.0);
+        box->setSuffix(tr(" dB"));
+        box->setKeyboardTracking(false);
+        box->setToolTip(helpTip(title, help));
+        return box;
+    };
+    attack_ = shaperBox(tr("Attack"), tr("Positive: each hit rises faster. The slow start of a hit (above 1 kHz) is lifted\n"
+                                         "towards its peak, by at most this much; the peak level itself stays put.\n"
+                                         "+6 dB suits soft AI drums. Negative: the start of each hit is turned down,\n"
+                                         "softening hits that click."));
+    sustain_ = shaperBox(tr("Sustain"), tr("Gain on the decay after each hit.\n"
+                                           "Negative values tighten boomy or roomy drums; positive values bring tails up."));
+    auto* trForm = new QFormLayout(transient_);
+    trForm->addRow(tr("Attack"), attack_);
+    trForm->addRow(tr("Sustain"), sustain_);
+
     auto* hint = new QLabel(tr("Bleed suppression and voice denoise render a copy; the rest is applied live, before the "
                                "fader, in this order. Ctrl+B compares with the original."),
                             this);
@@ -355,6 +382,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     editorLayout->addWidget(hum_);
     editorLayout->addWidget(denoise_);
     editorLayout->addWidget(expander_);
+    editorLayout->addWidget(transient_);
     editorLayout->addWidget(hint);
     editorLayout->addStretch(1);
     auto* scroll = new QScrollArea(this);
@@ -377,6 +405,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     connect(dc_, &QCheckBox::toggled, this, &CleanupPanel::edited);
     connect(highPass_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(expander_, &QGroupBox::toggled, this, &CleanupPanel::edited);
+    connect(transient_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(hum_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(denoise_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     // An unchecked group disables its children, but Detect and Learn Noise are
@@ -426,7 +455,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
             Q_EMIT revertRequested(info->id);
     });
     connect(hpSlope_, &QComboBox::currentIndexChanged, this, &CleanupPanel::edited);
-    for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_})
+    for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_, attack_, sustain_})
         connect(box, &QDoubleSpinBox::valueChanged, this, &CleanupPanel::edited);
     connect(hpSlider_, &QSlider::valueChanged, this, [this](int position) {
         if (updating_)
@@ -532,7 +561,7 @@ void CleanupPanel::showCurrent()
     const daw::TrackCleanup& c = info->cleanup;
     const QSignalBlocker b1(bypass_), b2(dc_), b3(highPass_), b4(expander_), b5(hpSlope_), b6(hpFrequency_), b7(threshold_),
         b8(ratio_), b9(range_), b10(release_), b11(hum_), b12(humMains_), b13(humHarmonics_), b14(denoise_), b15(reduction_),
-        b16(sensitivity_);
+        b16(sensitivity_), b17(transient_), b18(attack_), b19(sustain_);
     hum_->setChecked(c.hum.enabled);
     humMains_->setCurrentIndex(c.hum.frequencyHz < 55.0 ? 0 : 1);
     humHarmonics_->setValue(c.hum.harmonics);
@@ -590,9 +619,12 @@ void CleanupPanel::showCurrent()
     ratio_->setValue(c.expander.ratio);
     range_->setValue(c.expander.rangeDb);
     release_->setValue(c.expander.releaseMs);
+    transient_->setChecked(c.transient.enabled);
+    attack_->setValue(c.transient.attackDb);
+    sustain_->setValue(c.transient.sustainDb);
     updating_ = false;
 
-    for (QWidget* w : std::initializer_list<QWidget*>{dc_, highPass_, hum_, denoise_, expander_})
+    for (QWidget* w : std::initializer_list<QWidget*>{dc_, highPass_, hum_, denoise_, expander_, transient_})
         w->setEnabled(!c.bypassed);
     detectHum_->setEnabled(true); // see keepActionsEnabled in the constructor
     learn_->setEnabled(true);
@@ -620,6 +652,9 @@ daw::TrackCleanup CleanupPanel::readControls() const
     c.expander.ratio = ratio_->value();
     c.expander.rangeDb = range_->value();
     c.expander.releaseMs = release_->value();
+    c.transient.enabled = transient_->isChecked();
+    c.transient.attackDb = attack_->value();
+    c.transient.sustainDb = sustain_->value();
     c.hum.enabled = hum_->isChecked();
     // Keep a detected frequency such as 50 or 60 exactly; the menu only switches between the two.
     c.hum.frequencyHz = humMains_->currentData().toDouble();

@@ -61,14 +61,15 @@ void print(const StemReport& r)
     std::printf("Mix: %s LUFS integrated, LRA %.1f LU, true peak %s dBTP, %lld overs  (%.1f s analysed in %.2f s)\n\n",
                 db(r.mix.integratedLufs).c_str(), r.mix.loudnessRangeLu, db(r.mix.truePeakDbtp).c_str(),
                 static_cast<long long>(r.mixOvers), static_cast<double>(r.frames) / r.sampleRate, r.analysisSeconds);
-    std::printf("%-22s %6s %7s %7s %6s %7s %6s %6s %6s %7s  %s\n", "Track", "Share", "LUFS", "Peak", "Active", "Floor", "Low",
-                "Sub", "Corr", "Centre", "Clean-up");
+    std::printf("%-22s %6s %7s %7s %6s %7s %6s %6s %6s %7s %6s %7s  %s\n", "Track", "Share", "LUFS", "Peak", "Active", "Floor",
+                "Low", "Sub", "Corr", "Centre", "Hits/m", "Attack", "Clean-up");
     for (const auto& t : r.tracks)
-        std::printf("%-22.22s %5.1f%% %7s %7s %5.0f%% %7s %5.0f%% %5.0f%% %6s %6.0fHz  %s\n", t.name.c_str(), t.levelShare * 100.0,
+        std::printf("%-22.22s %5.1f%% %7s %7s %5.0f%% %7s %5.0f%% %5.0f%% %6s %6.0fHz %6.0f %5sms  %s\n", t.name.c_str(),
+                    t.levelShare * 100.0,
                     db(t.loudness.integratedLufs).c_str(), db(t.loudness.samplePeakDbfs).c_str(), t.activeFraction * 100.0,
                     t.noiseFloorDbfs ? db(*t.noiseFloorDbfs).c_str() : "-", t.lowEndShare * 100.0,
                     t.bandShare[0] * 100.0, t.stereoCorrelation ? std::to_string(*t.stereoCorrelation).substr(0, 5).c_str() : "-",
-                    t.centroidHz, describeCleanup(t.cleanup).c_str());
+                    t.centroidHz, t.hitsPerMinute, t.attackMs ? db(*t.attackMs).c_str() : "-", describeCleanup(t.cleanup).c_str());
     std::printf("\nStrongest overlaps (low / mid / high / full):\n");
     auto pairs = r.pairs;
     std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) { return a.correlation[3] > b.correlation[3]; });

@@ -29,6 +29,10 @@ void TrackCleanup::clamp() noexcept
     expander.ratio = limit(expander.ratio, 1.0, 20.0, defaults.expander.ratio);
     expander.rangeDb = limit(expander.rangeDb, 0.0, 90.0, defaults.expander.rangeDb);
     expander.releaseMs = limit(expander.releaseMs, 10.0, 2000.0, defaults.expander.releaseMs);
+    transient.attackDb = limit(transient.attackDb, -TransientSettings::kMaxDb, TransientSettings::kMaxDb,
+                               defaults.transient.attackDb);
+    transient.sustainDb = limit(transient.sustainDb, -TransientSettings::kMaxDb, TransientSettings::kMaxDb,
+                                defaults.transient.sustainDb);
     hum.frequencyHz = limit(hum.frequencyHz, 45.0, 65.0, defaults.hum.frequencyHz);
     hum.harmonics = std::clamp(hum.harmonics, 1, 8);
     denoise.reductionDb = limit(denoise.reductionDb, 0.0, 40.0, defaults.denoise.reductionDb);

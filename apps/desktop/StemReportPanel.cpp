@@ -21,7 +21,7 @@
 
 namespace {
 
-enum Column { ColTrack, ColShare, ColLoudness, ColPeak, ColActive, ColFloor, ColLowEnd, ColStereo, ColCleanup, ColNotes, ColCount };
+enum Column { ColTrack, ColShare, ColLoudness, ColPeak, ColActive, ColFloor, ColLowEnd, ColStereo, ColAttack, ColCleanup, ColNotes, ColCount };
 
 constexpr int kShareRole = Qt::UserRole + 1;
 constexpr int kTrackRole = Qt::UserRole + 2;
@@ -136,6 +136,9 @@ StemReportPanel::StemReportPanel(QWidget* parent) : QWidget(parent)
         {tr("Low end"), tr("Share of the stem's energy below 120 Hz. Kick and bass belong here;\n"
                            "low end in other stems muddies the mix.")},
         {tr("Stereo"), tr("Correlation of left and right: 1 = mono, 0 = unrelated (very wide), below 0 = out of phase.")},
+        {tr("Attack"), tr("How long the stem's loud hits take to rise to their peak above 2 kHz (median, 10 % to 90 %).\n"
+                          "A sampled drum takes about 1 ms; AI-generated drums often take 2-4 ms and sound soft.\n"
+                          "Empty when the stem has too few clear hits.")},
         {tr("Clean-up"), tr("The stem's clean-up chain when it was measured. The numbers in this row are measured after it.")},
         {tr("Notes"), tr("How many advice items concern this stem.")},
     };
@@ -270,6 +273,10 @@ QString StemReportPanel::describeFix(const daw::StemReport& report, const daw::C
                      .arg(fix.expander->thresholdDb, 0, 'f', 0)
                      .arg(fix.expander->ratio, 0, 'g', 3)
                      .arg(fix.expander->rangeDb, 0, 'f', 0);
+    if (fix.transient && fix.transient->enabled)
+        parts << tr("transient shaper, attack %1 dB, sustain %2 dB")
+                     .arg(fix.transient->attackDb, 0, 'f', 0)
+                     .arg(fix.transient->sustainDb, 0, 'f', 0);
     if (fix.dcRemoval && *fix.dcRemoval)
         parts << tr("DC removal");
     const QString name = fix.track < report.tracks.size() ? QString::fromStdString(report.tracks[fix.track].name) : QString();
@@ -351,6 +358,7 @@ void StemReportPanel::fillTable(const daw::StemReport& report, const std::vector
                     stereoColour = QColor(0xe5, 0x53, 0x3d);
             }
             set(ColStereo, stereo, stereoColour);
+            set(ColAttack, t.attackMs ? tr("%1 ms").arg(*t.attackMs, 0, 'f', 1) : QStringLiteral("-"));
         }
         const QString cleanup = QString::fromStdString(daw::describeCleanup(t.cleanup));
         auto* cleanupItem = set(ColCleanup, cleanup.isEmpty() ? QStringLiteral("-") : cleanup,

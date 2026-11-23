@@ -4,7 +4,7 @@
 #pragma once
 
 // Per-track clean-up: DC removal -> Butterworth high-pass -> hum notches ->
-// spectral noise reduction -> downward expander.
+// spectral noise reduction -> downward expander -> transient shaper.
 //
 // The noise reduction works on overlapping FFT frames and the expander looks
 // ahead (it measures the signal kLookaheadSeconds before it is heard, so it is
@@ -21,6 +21,7 @@
 
 #include <daw/dsp/Biquad.h>
 #include <daw/dsp/SpectralDenoiser.h>
+#include <daw/dsp/TransientShaper.h>
 
 #include <array>
 #include <vector>
@@ -43,10 +44,13 @@ struct CleanupParams {
     bool denoise = false;
     float denoiseReductionDb = 12.0f;
     float denoiseSensitivityDb = 0.0f;
+    bool transient = false;
+    float transientAttackDb = 0.0f;  // -12 .. +12
+    float transientSustainDb = 0.0f; // -12 .. +12
     const float* noiseProfile = nullptr; // SpectralDenoiser::kBins powers for this rate, owned by the snapshot
     bool listenRemoved = false;          // output what the chain removes instead of the result
 
-    bool active() const noexcept { return dcRemoval || highPass || hum || denoise || expander; }
+    bool active() const noexcept { return dcRemoval || highPass || hum || denoise || expander || transient; }
 
     friend bool operator==(const CleanupParams&, const CleanupParams&) = default;
 };
@@ -131,6 +135,9 @@ private:
     double gain_ = 1.0;
     double minGainDb_ = 0.0;
     int hold_ = 0;
+
+    // Transient shaper, looking ahead as far as the expander.
+    TransientShaper shaper_;
 
     // Expander lookahead delay line, interleaved stereo.
     std::vector<float> delay_;

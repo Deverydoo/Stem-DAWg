@@ -43,6 +43,7 @@ daw_add_test(daw_dsp_tests
         dsp/CleanupChainTests.cpp
         dsp/DenoiseTests.cpp
         dsp/BleedTests.cpp
+        dsp/TransientTests.cpp
     LIBS daw::dsp)
 
 # The engine test binary replaces global operator new/delete (AllocationGuard)

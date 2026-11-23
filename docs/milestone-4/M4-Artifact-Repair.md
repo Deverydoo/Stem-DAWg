@@ -3,8 +3,9 @@
 Stem separators leave artifacts that a home recording never has. M4 repairs them. This document covers what is done so far:
 
 - **Bleed suppression:** each stem keeps a little of every other stem (the hi-hat ghosting through the vocal, the kick inside the bass). Bleed suppression turns that down, judging every stem against all the others.
+- **Transient restoration:** AI-generated drums rise to each hit slowly and sound soft. The stem report measures how slowly; a transient shaper in the clean-up chain makes the hits rise faster without making them louder.
 
-Transient restoration, harshness control and stereo repair follow (see [the roadmap](../ROADMAP.md#m4-ai-artifact-repair)).
+Harshness control and stereo repair follow (see [the roadmap](../ROADMAP.md#m4-ai-artifact-repair)).
 
 ## 1. Bleed suppression (`dsp/BleedSuppressor`, `session/BleedTools`)
 
@@ -105,8 +106,84 @@ Every apply writes new copies (about 1.3 GB for 9 stems of a 6-minute song in 32
 - `daw_project_tests` `[store]`: unused copies are deleted on close, those that the manifest or autosave use are kept, and nothing is deleted when the manifest cannot be read.
 - `daw_integration_tests` `[voice]`: clips whose copy is missing play their original again.
 
+## 2. Transient restoration (`dsp/TransientShaper`, stem report "Attack")
+
+### What is wrong with AI drums
+
+Measured on the 9-stem Suno export, the drum stem's hits take about 5 ms to climb from −14 dB to their peak above 2 kHz, where a sampled electronic hit takes about 1 ms. The sum of all stems rises just as slowly, so the softness comes from the generation itself, not from the separation. There is no pre-echo before the hits to cut, either: the level climbs smoothly into each hit. The fix is to make the rise steeper.
+
+### Measuring it: the stem report's Attack column
+
+For every stem, the report follows the level of the mid signal above 2 kHz in 0.5 ms RMS frames. Below 2 kHz the envelope is the waveform itself: the first quarter-cycle of a 60 Hz kick alone takes 4 ms. A **hit** is a frame that is the highest within 10 ms before and 5 ms after it, and at least 15 dB above the lowest frame in the 15 ms before it. Its **rise time** runs from 10 % to 90 % of that jump, in amplitude, interpolated between frames. The top is the peak frame averaged with its two neighbours, because on a noisy hit (a snare, a hi-hat) a single frame is an extreme that the rise never really reaches.
+
+The report keeps the loud hits (within 12 dB of the loudest) and shows their **median rise time** and **hits per minute**. It needs at least 20 hits. The measurement streams with the rest of the report and costs nothing noticeable.
+
+On the Suno export, every stem rises in 1.3–3.6 ms; the lead vocal's consonants measure 2.0 ms. The attack time alone cannot tell drums from other parts, so the advice only goes to stems **named** for drums or percussion (drum, perc, kick, snare, hat, cymbal, toms, beat). Suno names its stems, so this works for the stems the app is built for.
+
+**Advice:** a percussion stem whose hits take 2 ms or longer gets "*Drums: its hits take 2.7 ms to rise, where a sampled drum takes about 1 ms, so they sound soft and smeared. The transient shaper with +6 dB of attack brings the snap back.*", with the shaper as a one-click fix.
+
+### The shaper
+
+A new stage at the end of the clean-up chain, after the expander, live and non-destructive like the rest. It has two controls:
+
+- **Attack** (−12 to +12 dB). Positive values make each hit rise faster; negative values soften hits that click.
+- **Sustain** (−12 to +12 dB). This sets the gain on the decay after each hit: negative values tighten boomy drums, positive values bring tails up.
+
+Turning a whole hit up does not sharpen it: the rise keeps its shape and the peak clips. The first version did exactly that, and the measured rise time barely moved (3.3 → 3.1 ms) while the drum stem's peak went from −2.9 to +2.5 dBFS. The attack control therefore reshapes the rise instead. It works on the band above 1 kHz, split off complementarily (high = x − low-pass(x)), so the sound is rebuilt bit-exactly at 0 dB. Fast gain changes below 1 kHz would only bend the waveform of a kick or a bass note. The shaper looks ahead by the chain's existing 5 ms lookahead:
+
+- **F** is the band's RMS level over 0.5 ms, read for the middle of its window.
+- **P** is the highest RMS level over 1.5 ms within the lookahead: the level the hit is heading for.
+- **A** is F smoothed over 3 ms. F more than 1.5–3 dB above A means the level is climbing.
+
+While the level climbs, the high band is lifted towards P: gain = min(attack, P/F − 0.5 dB). The slow start of a hit comes up, and the top, where F reaches P, is left alone. The lift is capped at P/F *after* smoothing, so a hit that already rises at once is not touched at all. Steady sound is never lifted either, because a level fluctuating above its recent average is also at or above the level ahead.
+
+A negative attack turns the first stretch of each hit down, weighted by F against its 20 ms average. Sustain compares a 10 ms RMS of the whole signal with its peak, held with a 600 ms release. It acts once the sound falls 3 dB or more below that peak, reaches full effect 12 dB below, and is held off while a new hit rises. Each gain is smoothed over 0.5 ms.
+
+### What did not work, and why
+
+Each of these was measured on the real drum stem before being replaced:
+
+| Attempt | Result |
+|---|---|
+| Boosting the attack portion (the classic transient designer) | The rise kept its shape; the peaks went up 5 dB and clipped. |
+| A detector with a 0.5 ms attack | The detector's own lag looked like a rise: instant hits got +8 dB. |
+| Single-sample peaks for P | On noise-like sound the next 5 ms always holds a higher sample, so every hit's top was lifted (+1–2 dB). |
+| A held level (60 ms release) | In a busy drum part the level stays up from the last hi-hat, hiding the next hit's rise. |
+| A 20 ms average for the rise | Held up by the hats and the previous hit; the first half of each rise stayed under it. |
+
+### Measured
+
+On the drum stem of the 9-stem Suno export (6:21), attack +6 dB, median over the 878 loud hits, level above 2 kHz relative to each hit's peak:
+
+| Before the peak | Before | After |
+|---|---|---|
+| 3.0 ms | −9.5 dB | −6.3 dB |
+| 2.5 ms | −7.0 dB | −4.1 dB |
+| 2.0 ms | −5.4 dB | −3.2 dB |
+| 1.0 ms | −3.8 dB | −2.6 dB |
+| peak and after | | within 0.2 dB |
+
+The stem report's attack time fell from 2.7 to 2.1 ms on Drums and from 3.6 to 2.9 ms on Percussion. Drums' sample peak moved by 0.1 dB. On synthetic hits that rise over 5 ms, the rise time falls by 30–50 %. The shaper costs about 0.1 % of one CPU core per track.
+
+### Tests
+
+- `daw_dsp_tests` `[transient]`:
+  - at 0 dB the audio passes bit-exactly;
+  - attack shortens a 5 ms rise by at least 30 % without raising the hit's level, the region before the hit or the decay;
+  - negative attack lowers a hit's start by 3 dB or more;
+  - an instant hit is left alone;
+  - sustain shapes the tail by the set amount and leaves the hit;
+  - steady 40 Hz, 100 Hz and 1 kHz tones are untouched;
+  - the result does not depend on the block size;
+  - switching off fades out without a jump;
+  - no allocation.
+- `daw_integration_tests` `[transient]`:
+  - the stem report measures a 5 ms rise as 3–5 ms, an instant one under 1 ms, and 240 hits per minute;
+  - only the soft drum stem gets the advice (not the sharp hi-hats, not a vocal);
+  - applying the fix shortens the measured attack by at least 25 %.
+- Serialization round trip and clamping, and the snapshot carrying the settings to the engine.
+
 ## Still to come in M4
 
-- **Transient restoration** for smeared drums.
 - **Harshness and "shimmer" control:** dynamic EQ driven by spectral analysis.
 - **Stereo repair:** mono low end, correlation-guided width.

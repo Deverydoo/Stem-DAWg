@@ -59,7 +59,7 @@ Milestone 1, the engineering foundation, is done: the engine, projects, waveform
 
 ### M4: AI-artifact repair
 - **Cross-stem bleed suppression** ✅ **done:** every stem is judged against all the others. Its share of each time-frequency bin is sharpened, so it is turned down where another stem owns the sound; bins that stems genuinely share are left alone. It renders processed copies (non-destructive, undoable). On a 9-stem Suno export the noise beds between notes dropped by 11–19 dB, while the music changed by 0.1–1.6 dB. See [M4-Artifact-Repair.md](milestone-4/M4-Artifact-Repair.md).
-- **Transient restoration** for smeared drums: re-sharpen attacks using onset detection, which already exists.
+- **Transient restoration** ✅ **done:** the stem report measures how fast each stem's hits rise (Suno drums: about 3 ms; a sampled drum: about 1 ms) and suggests a transient shaper for soft drum stems. The shaper lifts the slow start of each hit towards the level it is heading for, using the chain's lookahead, so hits rise faster without growing louder; sustain shapes the decay. See [M4-Artifact-Repair.md](milestone-4/M4-Artifact-Repair.md#2-transient-restoration-dsptransientshaper-stem-report-attack).
 - **Harshness and "shimmer" control:** dynamic EQ in the 2–6 kHz and 8–16 kHz bands, driven by spectral analysis rather than static cuts.
 - **Stereo repair:** mono below ~120 Hz, correlation-guided width correction.
 

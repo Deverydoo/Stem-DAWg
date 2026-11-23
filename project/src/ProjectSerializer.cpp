@@ -80,7 +80,9 @@ json cleanupToJson(const TrackCleanup& c)
               {"rangeDb", c.expander.rangeDb},
               {"releaseMs", c.expander.releaseMs}}},
             {"hum", {{"enabled", c.hum.enabled}, {"frequencyHz", c.hum.frequencyHz}, {"harmonics", c.hum.harmonics}}},
-            {"denoise", denoiseToJson(c.denoise)}};
+            {"denoise", denoiseToJson(c.denoise)},
+            {"transient",
+             {{"enabled", c.transient.enabled}, {"attackDb", c.transient.attackDb}, {"sustainDb", c.transient.sustainDb}}}};
 }
 
 // Missing or malformed values fall back to the defaults; numbers are clamped
@@ -111,6 +113,11 @@ TrackCleanup cleanupFromJson(const json& j)
         c.expander.ratio = number(*ex, "ratio", c.expander.ratio);
         c.expander.rangeDb = number(*ex, "rangeDb", c.expander.rangeDb);
         c.expander.releaseMs = number(*ex, "releaseMs", c.expander.releaseMs);
+    }
+    if (const auto tr = j.find("transient"); tr != j.end() && tr->is_object()) {
+        c.transient.enabled = flag(*tr, "enabled", c.transient.enabled);
+        c.transient.attackDb = number(*tr, "attackDb", c.transient.attackDb);
+        c.transient.sustainDb = number(*tr, "sustainDb", c.transient.sustainDb);
     }
     if (const auto hum = j.find("hum"); hum != j.end() && hum->is_object()) {
         c.hum.enabled = flag(*hum, "enabled", c.hum.enabled);

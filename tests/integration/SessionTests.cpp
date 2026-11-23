@@ -167,6 +167,7 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     c.dcRemoval = true;
     c.highPass = {true, 150.0, 48};
     c.expander = {true, -45.0, 2.5, 18.0, 300.0};
+    c.transient = {true, 5.0, -2.0};
     MediaPool pool;
 
     auto snapshot = buildPlaybackSnapshot(model, pool, 48000.0, 1);
@@ -181,7 +182,16 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     CHECK(p.ratio == 2.5f);
     CHECK(p.rangeDb == 18.0f);
     CHECK(p.releaseMs == 300.0f);
+    CHECK(p.transient);
+    CHECK(p.transientAttackDb == 5.0f);
+    CHECK(p.transientSustainDb == -2.0f);
     CHECK_FALSE(snapshot->tracks[1].cleanup.active());
+
+    // The transient shaper alone makes a chain.
+    TrackCleanup shaperOnly;
+    shaperOnly.transient.enabled = true;
+    CHECK(shaperOnly.active());
+    CHECK(cleanupParams(shaperOnly).active());
 
     // Bypass, per track or for the whole project (A/B), plays the track dry.
     snapshot = buildPlaybackSnapshot(model, pool, 48000.0, 2, nullptr, {.bypassCleanup = true});

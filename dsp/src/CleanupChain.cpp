@@ -19,23 +19,6 @@ double timeCoeff(double milliseconds, double sampleRate) noexcept
     return frames <= 0.0 ? 0.0 : std::exp(-1.0 / frames);
 }
 
-// Butterworth high-pass section (RBJ cookbook form, exact cutoff after the
-// bilinear transform).
-BiquadCoefficients highPassSection(double hz, double q, double sampleRate) noexcept
-{
-    const double w0 = 2.0 * std::numbers::pi * hz / sampleRate;
-    const double cosW = std::cos(w0);
-    const double alpha = std::sin(w0) / (2.0 * q);
-    const double a0 = 1.0 + alpha;
-    BiquadCoefficients c;
-    c.b0 = (1.0 + cosW) / 2.0 / a0;
-    c.b1 = -(1.0 + cosW) / a0;
-    c.b2 = c.b0;
-    c.a1 = -2.0 * cosW / a0;
-    c.a2 = (1.0 - alpha) / a0;
-    return c;
-}
-
 } // namespace
 
 void CleanupChain::prepare(double sampleRate)
@@ -53,6 +36,7 @@ void CleanupChain::prepare(double sampleRate)
     detectorCoeff_ = timeCoeff(kDetectorMs, sampleRate_);
     attackCoeff_ = timeCoeff(kAttackMs, sampleRate_);
     holdFrames_ = static_cast<int>(std::lround(kHoldMs * 0.001 * sampleRate_));
+    shaper_.prepare(sampleRate_, lookahead_);
     CleanupParams params = params_;
     params.noiseProfile = nullptr; // owned by a snapshot that may be gone; the next setParams brings it back
     params_ = {};
@@ -72,7 +56,7 @@ void CleanupChain::setParams(const CleanupParams& params) noexcept
     for (int k = 0; k < sections; ++k) {
         // Butterworth pole pairs: Q = 1 / (2 cos(theta)), theta = pi (2k + 1) / (2 order).
         const double theta = std::numbers::pi * (2.0 * k + 1.0) / (2.0 * order);
-        const BiquadCoefficients c = highPassSection(hz, 1.0 / (2.0 * std::cos(theta)), sampleRate_);
+        const BiquadCoefficients c = BiquadCoefficients::highPass(hz, 1.0 / (2.0 * std::cos(theta)), sampleRate_);
         for (auto& channel : hp_)
             channel[static_cast<std::size_t>(k)].setCoefficients(c);
     }
@@ -90,6 +74,7 @@ void CleanupChain::setParams(const CleanupParams& params) noexcept
     // Above threshold + half the knee the curve is flat: the per-sample gain
     // math is skipped there (most of the time while music plays).
     openPower_ = std::pow(10.0, (static_cast<double>(params.thresholdDb) + kKneeDb / 2.0) / 10.0);
+    shaper_.setParams({params.transientAttackDb, params.transientSustainDb});
 }
 
 void CleanupChain::reset() noexcept
@@ -106,6 +91,7 @@ void CleanupChain::reset() noexcept
     hold_ = 0;
     std::fill(delay_.begin(), delay_.end(), 0.0f);
     delayPos_ = 0;
+    shaper_.reset();
     hum_.reset();
     denoiser_.reset();
     std::fill(fftDelay_.begin(), fftDelay_.end(), 0.0f);
@@ -200,8 +186,10 @@ void CleanupChain::processChunk(float* left, float* right, int numFrames) noexce
         }
     }
 
-    // Expander (gain from the undelayed signal) and the lookahead delay.
+    // Expander and transient shaper (gains from the undelayed signal) and the
+    // lookahead delay.
     const bool expand = params_.expander;
+    const bool shape = params_.transient;
     const double threshold = params_.thresholdDb;
     const double ratio = params_.ratio;
     const double range = params_.rangeDb;
@@ -238,10 +226,16 @@ void CleanupChain::processChunk(float* left, float* right, int numFrames) noexce
             gain_ = std::pow(10.0, gainDb_ / 20.0);
         }
 
+        // The shaper measures this sample and returns the gain for the one
+        // leaving the delay line.
+        const TransientShaper::Gains shaped = shaper_.process(l, r, shape);
+
         float* slot = delay + 2 * delayPos_;
         const float g = static_cast<float>(gain_);
-        left[i] = slot[0] * g;
-        right[i] = slot[1] * g;
+        float outL = slot[0], outR = slot[1];
+        shaper_.apply(outL, outR, shaped);
+        left[i] = outL * g;
+        right[i] = outR * g;
         slot[0] = l;
         slot[1] = r;
         if (++delayPos_ == lookahead_)

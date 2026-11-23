@@ -51,6 +51,7 @@ enum class PairBand { Low, Mid, High, Full, Count };
 inline constexpr std::size_t kPairBandCount = static_cast<std::size_t>(PairBand::Count);
 inline constexpr double kLowEndHz = 120.0;     // "low end" for doubling checks
 inline constexpr double kHighBandHz = 4000.0;
+inline constexpr double kAttackBandHz = 2000.0; // attacks are measured above this (below it the envelope is the waveform)
 
 struct TrackStemReport {
     TrackId track;
@@ -71,6 +72,11 @@ struct TrackStemReport {
     std::array<double, kStemBandCount> bandShare{}; // energy fraction per StemBand
     double lowEndShare = 0.0;         // energy fraction below kLowEndHz
     double centroidHz = 0.0;
+    // Hits: peaks of the level above kAttackBandHz that jump at least 15 dB
+    // within 15 ms. Their rise time (10 % to 90 % of the jump in amplitude)
+    // shows how sharp the attacks are: about 1 ms for a sampled drum.
+    double hitsPerMinute = 0.0;       // loud hits (within 12 dB of the loudest)
+    std::optional<double> attackMs;   // median rise time of the loud hits; empty with too few of them
     TrackCleanup cleanup;             // the chain in place when measured
 };
 
@@ -87,6 +93,7 @@ struct CleanupFix {
     std::optional<bool> dcRemoval;
     std::optional<HighPassSettings> highPass;
     std::optional<ExpanderSettings> expander;
+    std::optional<TransientSettings> transient;
 
     TrackCleanup applyTo(TrackCleanup cleanup) const;
     friend bool operator==(const CleanupFix&, const CleanupFix&) = default;

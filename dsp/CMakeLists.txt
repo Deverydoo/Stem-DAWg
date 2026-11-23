@@ -9,6 +9,7 @@ daw_add_module(dsp
         src/TruePeak.cpp
         src/LoudnessMeter.cpp
         src/CleanupChain.cpp
+        src/TransientShaper.cpp
         src/SpectralDenoiser.cpp
         src/DeepFilterDsp.cpp
         src/BleedSuppressor.cpp
