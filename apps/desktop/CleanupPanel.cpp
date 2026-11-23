@@ -330,6 +330,34 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     exForm->addRow(floor_);
     exForm->addRow(fromFloor_);
 
+    // Harshness and shimmer control.
+    resonance_ = new QGroupBox(tr("Harshness"), this);
+    resonance_->setCheckable(true);
+    resonance_->setToolTip(helpTip(tr("Harshness and shimmer control"),
+                                   tr("Turns down narrow peaks that keep standing above the sound around them, and only\n"
+                                      "while they do: a partial that rings through many notes (harsh at 2-6 kHz), or a\n"
+                                      "steady tone AI generators leave in the high end (often near 16 kHz, heard as a\n"
+                                      "whine or shimmer). Notes that come and go are left alone. It reacts within about\n"
+                                      "a second, so it follows the song rather than single notes.")));
+    const auto depthBox = [this](const QString& title, const QString& help) {
+        auto* box = new QDoubleSpinBox(resonance_);
+        box->setRange(0.0, daw::ResonanceSettings::kMaxDb);
+        box->setDecimals(1);
+        box->setSingleStep(1.0);
+        box->setSuffix(tr(" dB"));
+        box->setSpecialValueText(tr("Off"));
+        box->setKeyboardTracking(false);
+        box->setToolTip(helpTip(title, help));
+        return box;
+    };
+    harsh_ = depthBox(tr("2-6 kHz"), tr("The most a resonance between 2 and 6 kHz is turned down. A peak is only ever\n"
+                                        "brought down towards the sound around it, never below. 6 dB suits most AI songs."));
+    shimmer_ = depthBox(tr("8-17 kHz"), tr("The most a tone between 8 and 17.5 kHz is turned down. A peak is only ever\n"
+                                           "brought down towards the sound around it, never below. 6 dB suits most AI songs."));
+    auto* rsForm = new QFormLayout(resonance_);
+    rsForm->addRow(tr("2-6 kHz"), harsh_);
+    rsForm->addRow(tr("8-17 kHz"), shimmer_);
+
     // Transient shaper.
     transient_ = new QGroupBox(tr("Transients"), this);
     transient_->setCheckable(true);
@@ -381,6 +409,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     editorLayout->addWidget(highPass_);
     editorLayout->addWidget(hum_);
     editorLayout->addWidget(denoise_);
+    editorLayout->addWidget(resonance_);
     editorLayout->addWidget(expander_);
     editorLayout->addWidget(transient_);
     editorLayout->addWidget(hint);
@@ -405,6 +434,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     connect(dc_, &QCheckBox::toggled, this, &CleanupPanel::edited);
     connect(highPass_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(expander_, &QGroupBox::toggled, this, &CleanupPanel::edited);
+    connect(resonance_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(transient_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(hum_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(denoise_, &QGroupBox::toggled, this, &CleanupPanel::edited);
@@ -455,7 +485,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
             Q_EMIT revertRequested(info->id);
     });
     connect(hpSlope_, &QComboBox::currentIndexChanged, this, &CleanupPanel::edited);
-    for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_, attack_, sustain_})
+    for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_, harsh_, shimmer_, attack_, sustain_})
         connect(box, &QDoubleSpinBox::valueChanged, this, &CleanupPanel::edited);
     connect(hpSlider_, &QSlider::valueChanged, this, [this](int position) {
         if (updating_)
@@ -561,7 +591,7 @@ void CleanupPanel::showCurrent()
     const daw::TrackCleanup& c = info->cleanup;
     const QSignalBlocker b1(bypass_), b2(dc_), b3(highPass_), b4(expander_), b5(hpSlope_), b6(hpFrequency_), b7(threshold_),
         b8(ratio_), b9(range_), b10(release_), b11(hum_), b12(humMains_), b13(humHarmonics_), b14(denoise_), b15(reduction_),
-        b16(sensitivity_), b17(transient_), b18(attack_), b19(sustain_);
+        b16(sensitivity_), b17(transient_), b18(attack_), b19(sustain_), b20(resonance_), b21(harsh_), b22(shimmer_);
     hum_->setChecked(c.hum.enabled);
     humMains_->setCurrentIndex(c.hum.frequencyHz < 55.0 ? 0 : 1);
     humHarmonics_->setValue(c.hum.harmonics);
@@ -619,12 +649,15 @@ void CleanupPanel::showCurrent()
     ratio_->setValue(c.expander.ratio);
     range_->setValue(c.expander.rangeDb);
     release_->setValue(c.expander.releaseMs);
+    resonance_->setChecked(c.resonance.enabled);
+    harsh_->setValue(c.resonance.harshDb);
+    shimmer_->setValue(c.resonance.shimmerDb);
     transient_->setChecked(c.transient.enabled);
     attack_->setValue(c.transient.attackDb);
     sustain_->setValue(c.transient.sustainDb);
     updating_ = false;
 
-    for (QWidget* w : std::initializer_list<QWidget*>{dc_, highPass_, hum_, denoise_, expander_, transient_})
+    for (QWidget* w : std::initializer_list<QWidget*>{dc_, highPass_, hum_, denoise_, resonance_, expander_, transient_})
         w->setEnabled(!c.bypassed);
     detectHum_->setEnabled(true); // see keepActionsEnabled in the constructor
     learn_->setEnabled(true);
@@ -652,6 +685,9 @@ daw::TrackCleanup CleanupPanel::readControls() const
     c.expander.ratio = ratio_->value();
     c.expander.rangeDb = range_->value();
     c.expander.releaseMs = release_->value();
+    c.resonance.enabled = resonance_->isChecked();
+    c.resonance.harshDb = harsh_->value();
+    c.resonance.shimmerDb = shimmer_->value();
     c.transient.enabled = transient_->isChecked();
     c.transient.attackDb = attack_->value();
     c.transient.sustainDb = sustain_->value();

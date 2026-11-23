@@ -31,7 +31,7 @@ void CleanupChain::prepare(double sampleRate)
     dryRing_.assign(static_cast<std::size_t>(latency_) * 2, 0.0f);
     dryOut_.assign(static_cast<std::size_t>(latency_) * 2, 0.0f);
     hum_.prepare(sampleRate_);
-    denoiser_.prepare();
+    denoiser_.prepare(sampleRate_);
     dcR_ = std::exp(-2.0 * std::numbers::pi * kDcCutoffHz / sampleRate_);
     detectorCoeff_ = timeCoeff(kDetectorMs, sampleRate_);
     attackCoeff_ = timeCoeff(kAttackMs, sampleRate_);
@@ -68,7 +68,11 @@ void CleanupChain::setParams(const CleanupParams& params) noexcept
 
     hum_.setParams(params.hum ? params.humHz : 0.0, params.hum ? params.humHarmonics : 0);
     denoiser_.setParams({params.denoiseReductionDb, params.denoiseSensitivityDb});
-    denoiser_.setNoiseProfile(params.noiseProfile);
+    // The profile only applies while noise reduction is on: the spectral
+    // stage also runs for resonance suppression alone.
+    denoiser_.setNoiseProfile(params.denoise ? params.noiseProfile : nullptr);
+    denoiser_.setResonance(params.resonance ? ResonanceParams{params.resonanceHarshDb, params.resonanceShimmerDb}
+                                            : ResonanceParams{});
 
     releaseCoeff_ = timeCoeff(std::max(1.0f, params.releaseMs), sampleRate_);
     // Above threshold + half the knee the curve is flat: the per-sample gain
@@ -168,8 +172,8 @@ void CleanupChain::processChunk(float* left, float* right, int numFrames) noexce
 
     hum_.process(left, right, numFrames);
 
-    // Noise reduction, or the same delay without it.
-    if (params_.denoise) {
+    // The spectral stage, or the same delay without it.
+    if (params_.spectral()) {
         denoiser_.process(left, right, numFrames);
     } else {
         const int length = SpectralDenoiser::latency();

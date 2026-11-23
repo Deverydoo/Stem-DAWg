@@ -7,6 +7,8 @@
 
 #include <daw/dsp/Biquad.h>
 #include <daw/dsp/Fft.h>
+#include <daw/dsp/ResonanceSuppressor.h>
+#include <daw/dsp/SpectralDenoiser.h>
 #include <daw/engine/AudioEngine.h>
 #include <daw/project/ProjectSerializer.h>
 #include <daw/session/Renderer.h>
@@ -68,6 +70,22 @@ constexpr float kAttackSilenceDb = -200.0f;
 // suggested. Tuned on real Suno drum stems (about 3 ms); see docs/milestone-4.
 constexpr double kSoftAttackMs = 2.0;
 constexpr double kSoftAttackGainDb = 6.0;
+// Resonances: measured with the chain's detector on 2048-point frames. The
+// chain takes one every 512 samples; the report, which only needs the
+// detector's statistics over seconds, one every 2048 (its time constants are
+// in milliseconds, so the result is the same). A stem whose strongest peak in
+// a range would be cut by kResonanceAdviceDb on average gets the suppressor
+// suggested. Tuned on 24 Suno songs and a 9-stem export: flagged songs
+// measure 2.0-3.9 dB, the others up to 1.9 dB, bright synthetic 1 s notes
+// 1.8 dB; see docs/milestone-4.
+constexpr int kResonanceHop = SpectralDenoiser::kFftSize;
+constexpr double kResonanceAdviceDb = 2.0;
+constexpr double kResonanceActiveDbfs = -70.0; // frames quieter than this are not counted
+constexpr double kResonanceMinSeconds = 5.0;   // of counted frames
+// A stem that supplies less of the mix's energy in the band around the peak
+// than this is masked there by the others (on the 9-stem export, the bass's
+// 2 kHz peak sits in 4 % of that band).
+constexpr double kResonanceMinBandShare = 0.10;
 
 std::string format(const char* pattern, ...)
 {
@@ -131,6 +149,18 @@ struct TrackState {
     std::vector<std::complex<float>> spectrum;  // current frame
     bool frameHasSignal = false;
 
+    // Resonances.
+    ResonanceSuppressor resonance;
+    std::array<std::vector<float>, 2> resonanceInput; // last kFftSize samples per channel
+    int resonanceFill = 0;
+    std::vector<float> resonancePower;
+    std::vector<std::complex<float>> resonanceScratch;
+    std::vector<double> resonanceCut;        // summed per bin over counted frames
+    std::vector<double> resonanceRingExcess; // excess summed over the frames that cut
+    std::vector<std::int64_t> resonanceRings; // frames that cut, per bin
+    std::int64_t resonanceFrames = 0;
+    void addResonanceFrame(const Fft& fft, const float* window);
+
     // Attacks.
     Biquad attackFilter;
     double attackPower = 0.0;
@@ -190,6 +220,49 @@ void TrackState::addAttackFrame(float db)
     const double t10 = static_cast<double>(k10) + (b10 > a10 ? (at10 - a10) / (b10 - a10) : 0.0);
     hits.push_back({static_cast<float>(std::max(0.0, t90 - t10) * kAttackFrameMs), top});
     lastHit = peak;
+}
+
+// Called every kResonanceHop samples with the last kFftSize in resonanceInput.
+void TrackState::addResonanceFrame(const Fft& fft, const float* window)
+{
+    constexpr int size = SpectralDenoiser::kFftSize;
+    double meanSquare = 0.0;
+    for (int i = 0; i < size; ++i) {
+        const double l = resonanceInput[0][static_cast<std::size_t>(i)];
+        const double r = resonanceInput[1][static_cast<std::size_t>(i)];
+        meanSquare += 0.5 * (l * l + r * r);
+    }
+    meanSquare /= size;
+    SpectralDenoiser::framePower(resonanceInput[0].data(), resonanceInput[1].data(), resonancePower.data(),
+                                 resonanceScratch.data(), fft, window);
+    resonance.analyse(resonancePower.data());
+    if (meanSquare > std::pow(10.0, kResonanceActiveDbfs / 10.0)) {
+        for (int k = 0; k < resonance.bins(); ++k) {
+            const float cut = resonance.cutDb(k);
+            if (cut <= 0.0f)
+                continue;
+            const auto i = static_cast<std::size_t>(k);
+            resonanceCut[i] += cut;
+            resonanceRingExcess[i] += resonance.excessDb(k);
+            ++resonanceRings[i];
+        }
+        ++resonanceFrames;
+    }
+    for (auto& channel : resonanceInput)
+        std::copy(channel.begin() + kResonanceHop, channel.end(), channel.begin());
+}
+
+// The track's share of all tracks' energy in the StemBand that holds `hz`.
+double bandShareOfMix(const StemReport& report, std::size_t track, double hz)
+{
+    std::size_t band = kStemBandCount - 1;
+    while (band > 0 && hz < kStemBandEdgesHz[band])
+        --band;
+    double total = 0.0;
+    for (const TrackStemReport& t : report.tracks)
+        total += t.levelShare * t.bandShare[band];
+    const TrackStemReport& t = report.tracks[track];
+    return total > 0.0 ? t.levelShare * t.bandShare[band] / total : 0.0;
 }
 
 std::unique_ptr<AudioEngine> makeEngine(const ProjectModel& model, const MediaPool& media, double rate)
@@ -263,6 +336,14 @@ TrackCleanup CleanupFix::applyTo(TrackCleanup cleanup) const
         cleanup.expander = *expander;
     if (transient)
         cleanup.transient = *transient;
+    if (resonance) {
+        if (cleanup.resonance.enabled) {
+            cleanup.resonance.harshDb = std::max(cleanup.resonance.harshDb, resonance->harshDb);
+            cleanup.resonance.shimmerDb = std::max(cleanup.resonance.shimmerDb, resonance->shimmerDb);
+        } else {
+            cleanup.resonance = *resonance;
+        }
+    }
     cleanup.clamp();
     return cleanup;
 }
@@ -315,7 +396,18 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
         t.frameDb.reserve(static_cast<std::size_t>(static_cast<double>(total) / (kFrameSeconds * rate)) + 2);
         t.attackFilter.setCoefficients(BiquadCoefficients::highPass(std::min(kAttackBandHz, 0.4 * rate), 0.7071, rate));
         t.attackDb.fill(kAttackSilenceDb);
+        t.resonance.prepare(rate, SpectralDenoiser::kFftSize, kResonanceHop);
+        t.resonance.setParams({static_cast<float>(kResonanceProbeDb), static_cast<float>(kResonanceProbeDb)});
+        for (auto& channel : t.resonanceInput)
+            channel.assign(SpectralDenoiser::kFftSize, 0.0f);
+        t.resonancePower.assign(SpectralDenoiser::kBins, 0.0f);
+        t.resonanceScratch.assign(SpectralDenoiser::kFftSize, {});
+        t.resonanceCut.assign(SpectralDenoiser::kBins, 0.0);
+        t.resonanceRingExcess.assign(SpectralDenoiser::kBins, 0.0);
+        t.resonanceRings.assign(SpectralDenoiser::kBins, 0);
     }
+    const Fft resonanceFft(SpectralDenoiser::kFftSize);
+    const std::vector<float> resonanceWindow = SpectralDenoiser::window();
     const int attackFrameLength = std::max(1, static_cast<int>(std::lround(kAttackFrameMs * 0.001 * rate)));
     auto mixEngine = makeEngine(model, media, rate);
     LoudnessMeter mixMeter;
@@ -392,6 +484,14 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
                 t.addAttackFrame(mean > 1e-20 ? static_cast<float>(toDb(mean)) : kAttackSilenceDb);
                 t.attackPower = 0.0;
                 t.attackPosition = 0;
+            }
+
+            const auto slot = static_cast<std::size_t>(SpectralDenoiser::kFftSize - kResonanceHop + t.resonanceFill);
+            t.resonanceInput[0][slot] = static_cast<float>(l);
+            t.resonanceInput[1][slot] = static_cast<float>(r);
+            if (++t.resonanceFill == kResonanceHop) {
+                t.addResonanceFrame(resonanceFft, resonanceWindow.data());
+                t.resonanceFill = 0;
             }
         }
         t.energy += frameEnergy;
@@ -523,6 +623,26 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
             r.hitsPerMinute = static_cast<double>(rises.size()) / (static_cast<double>(total) / rate / 60.0);
             if (rises.size() >= kAttackMinHits)
                 r.attackMs = percentile(rises, 0.5);
+        }
+
+        // Resonances: the bin with the largest mean cut in each range (a bin
+        // in both tapers belongs to the range that weighs it more).
+        if (static_cast<double>(t.resonanceFrames) * kResonanceHop / rate >= kResonanceMinSeconds) {
+            const double counted = static_cast<double>(t.resonanceFrames);
+            for (int k = 0; k < t.resonance.bins(); ++k) {
+                const float harsh = t.resonance.harshWeight(k);
+                const float shimmer = t.resonance.shimmerWeight(k);
+                if (harsh <= 0.0f && shimmer <= 0.0f)
+                    continue;
+                ResonanceFinding& finding = harsh >= shimmer ? r.harshness : r.shimmer;
+                const auto bin = static_cast<std::size_t>(k);
+                const double cut = t.resonanceCut[bin] / counted;
+                if (cut > finding.cutDb || finding.hz == 0.0) {
+                    const auto rings = static_cast<double>(t.resonanceRings[bin]);
+                    finding = {k * t.resonance.binHz(), cut, rings / counted,
+                               rings > 0.0 ? t.resonanceRingExcess[bin] / rings : 0.0};
+                }
+            }
         }
         report.tracks.push_back(std::move(r));
     }
@@ -660,6 +780,40 @@ std::vector<StemAdvice> adviseStems(const StemReport& report)
             transient.attackDb = kSoftAttackGainDb;
             transient.sustainDb = 0.0;
             advice.back().fixes.push_back({.track = i, .transient = transient});
+        }
+
+        // Narrow peaks that ring through the song (2-6 kHz) and steady
+        // generator tones (8-17.5 kHz).
+        if (t.levelShare >= kAudibleShare) {
+            const ResonanceSettings& current = t.cleanup.resonance;
+            const bool suppressing = t.cleanup.active() && current.enabled;
+            const auto heard = [&](const ResonanceFinding& f) {
+                return f.cutDb >= kResonanceAdviceDb && bandShareOfMix(report, i, f.hz) >= kResonanceMinBandShare;
+            };
+            if (heard(t.harshness) && !(suppressing && current.harshDb > 0.0)) {
+                add(AdviceSeverity::Suggestion, "harsh-resonance", i, std::nullopt,
+                    format("%s: a resonance at %.1f kHz rings about %.0f dB above the sound around it during %.0f %% of "
+                           "the song, which sounds harsh. Harshness control turns it down while it rings and leaves the "
+                           "sound around it alone.",
+                           name(i), t.harshness.hz / 1000.0, t.harshness.excessDb, t.harshness.ringingFraction * 100.0));
+                ResonanceSettings fix;
+                fix.enabled = true;
+                fix.harshDb = kResonanceProbeDb;
+                fix.shimmerDb = 0.0;
+                advice.back().fixes.push_back({.track = i, .resonance = fix});
+            }
+            if (heard(t.shimmer) && !(suppressing && current.shimmerDb > 0.0)) {
+                add(AdviceSeverity::Suggestion, "shimmer-tones", i, std::nullopt,
+                    format("%s: a narrow tone at %.1f kHz stands about %.0f dB above the high end around it during "
+                           "%.0f %% of the song, heard as a whine or a metallic shimmer. AI generators leave such tones "
+                           "(often near 16 kHz). Shimmer control turns them down to the level around them.",
+                           name(i), t.shimmer.hz / 1000.0, t.shimmer.excessDb, t.shimmer.ringingFraction * 100.0));
+                ResonanceSettings fix;
+                fix.enabled = true;
+                fix.harshDb = 0.0;
+                fix.shimmerDb = kResonanceProbeDb;
+                advice.back().fixes.push_back({.track = i, .resonance = fix});
+            }
         }
 
         if (t.sourceOvers > 0)
@@ -836,6 +990,12 @@ std::string describeCleanup(const TrackCleanup& cleanup)
                                                : format("denoise %.0f dB", cleanup.denoise.reductionDb));
     if (cleanup.expander.enabled)
         append(format("expander %.0f dB", cleanup.expander.thresholdDb));
+    if (cleanup.resonance.enabled) {
+        if (cleanup.resonance.harshDb > 0.0)
+            append(format("harshness %.0f dB", cleanup.resonance.harshDb));
+        if (cleanup.resonance.shimmerDb > 0.0)
+            append(format("shimmer %.0f dB", cleanup.resonance.shimmerDb));
+    }
     if (cleanup.transient.enabled)
         append(format("transients %+.0f/%+.0f dB", cleanup.transient.attackDb, cleanup.transient.sustainDb));
     if (cleanup.dcRemoval)
@@ -852,6 +1012,11 @@ nlohmann::json toJson(const StemReport& report)
         return json{{"integratedLufs", r.integratedLufs},   {"loudnessRangeLu", r.loudnessRangeLu},
                     {"maxMomentaryLufs", r.maxMomentaryLufs}, {"maxShortTermLufs", r.maxShortTermLufs},
                     {"truePeakDbtp", r.truePeakDbtp},       {"samplePeakDbfs", r.samplePeakDbfs}};
+    };
+    auto resonance = [](const ResonanceFinding& f) {
+        return f.hz > 0.0 ? json{{"hz", f.hz}, {"cutDb", f.cutDb}, {"ringingFraction", f.ringingFraction},
+                                 {"excessDb", f.excessDb}}
+                          : json(nullptr);
     };
     json tracks = json::array();
     for (const TrackStemReport& t : report.tracks) {
@@ -873,6 +1038,8 @@ nlohmann::json toJson(const StemReport& report)
                           {"stereoCorrelation", t.stereoCorrelation ? json(*t.stereoCorrelation) : json(nullptr)},
                           {"hitsPerMinute", t.hitsPerMinute},
                           {"attackMs", t.attackMs ? json(*t.attackMs) : json(nullptr)},
+                          {"harshness", resonance(t.harshness)},
+                          {"shimmer", resonance(t.shimmer)},
                           {"sideRatio", t.sideRatio},
                           {"bandShare", bands},
                           {"lowEndShare", t.lowEndShare},
@@ -906,6 +1073,10 @@ nlohmann::json toJson(const StemReport& report)
                     fix["highPass"] = full["highPass"];
                 if (f.expander)
                     fix["expander"] = full["expander"];
+                if (f.transient)
+                    fix["transient"] = full["transient"];
+                if (f.resonance)
+                    fix["resonance"] = full["resonance"];
                 fixes.push_back(std::move(fix));
             }
             item["fixes"] = std::move(fixes);

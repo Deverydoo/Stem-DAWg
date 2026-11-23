@@ -12,6 +12,7 @@
 //  * Where is the noise bed of each stem, and does it have gaps to clean?
 //  * Which stems share the same low end (a kick or bass doubled across stems)?
 //  * Which stems bleed into each other?
+//  * Do drum hits rise slowly, and do narrow resonances ring through the song?
 //  * Does the mix clip, and how loud is it (BS.1770 / EBU R 128)?
 //
 // Each stem is measured as it sounds, after its clean-up chain (high-pass,
@@ -53,6 +54,16 @@ inline constexpr double kLowEndHz = 120.0;     // "low end" for doubling checks
 inline constexpr double kHighBandHz = 4000.0;
 inline constexpr double kAttackBandHz = 2000.0; // attacks are measured above this (below it the envelope is the waveform)
 
+/// The strongest persistent narrow peak in one range, as the resonance
+/// suppressor sees it (dsp/ResonanceSuppressor) with kResonanceProbeDb of depth.
+struct ResonanceFinding {
+    double hz = 0.0;              // 0 when nothing was measured
+    double cutDb = 0.0;           // mean cut the suppressor applies there while the stem plays
+    double ringingFraction = 0.0; // fraction of that time it cuts at all
+    double excessDb = 0.0;        // mean height above the surrounding spectrum while it cuts
+};
+inline constexpr double kResonanceProbeDb = 6.0; // depth the report measures with, and suggests
+
 struct TrackStemReport {
     TrackId track;
     std::string name;
@@ -77,6 +88,8 @@ struct TrackStemReport {
     // shows how sharp the attacks are: about 1 ms for a sampled drum.
     double hitsPerMinute = 0.0;       // loud hits (within 12 dB of the loudest)
     std::optional<double> attackMs;   // median rise time of the loud hits; empty with too few of them
+    ResonanceFinding harshness;       // 2-6 kHz
+    ResonanceFinding shimmer;         // 8-17.5 kHz
     TrackCleanup cleanup;             // the chain in place when measured
 };
 
@@ -88,12 +101,15 @@ struct StemPairReport {
 
 /// A change to one track's clean-up chain that solves an advice item. Only
 /// the stages that are set change; applying a fix also lifts the bypass.
+/// Resonance fixes merge: each range keeps the larger of the two depths, so
+/// a harshness fix and a shimmer fix for the same track both apply.
 struct CleanupFix {
     std::size_t track = 0; // index into StemReport::tracks
     std::optional<bool> dcRemoval;
     std::optional<HighPassSettings> highPass;
     std::optional<ExpanderSettings> expander;
     std::optional<TransientSettings> transient;
+    std::optional<ResonanceSettings> resonance;
 
     TrackCleanup applyTo(TrackCleanup cleanup) const;
     friend bool operator==(const CleanupFix&, const CleanupFix&) = default;

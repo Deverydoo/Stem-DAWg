@@ -52,6 +52,9 @@ CleanupParams cleanupParams(const TrackCleanup& cleanup) noexcept
     p.transient = c.transient.enabled;
     p.transientAttackDb = static_cast<float>(c.transient.attackDb);
     p.transientSustainDb = static_cast<float>(c.transient.sustainDb);
+    p.resonance = c.resonance.enabled;
+    p.resonanceHarshDb = static_cast<float>(c.resonance.harshDb);
+    p.resonanceShimmerDb = static_cast<float>(c.resonance.shimmerDb);
     return p;
 }
 

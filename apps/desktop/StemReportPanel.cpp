@@ -172,8 +172,8 @@ StemReportPanel::StemReportPanel(QWidget* parent) : QWidget(parent)
     connect(advice_, &QListWidget::currentRowChanged, this, &StemReportPanel::updateFixButtons);
 
     applyFix_ = new QPushButton(tr("Apply Fix"), this);
-    applyFix_->setToolTip(helpTip(tr("Apply fix"), tr("Sets up the clean-up the selected advice describes (high-pass, expander or DC removal).\n"
-                                                       "Nothing is rendered: the change is live and can be edited or bypassed in the Clean-up panel.")));
+    applyFix_->setToolTip(helpTip(tr("Apply fix"), tr("Sets up the clean-up the selected advice describes, such as a high-pass, the expander\n"
+                                                       "or harshness control. Nothing is rendered: the change is live and can be edited or bypassed in the Clean-up panel.")));
     applyAll_ = new QPushButton(tr("Apply All Fixes"), this);
     applyAll_->setToolTip(helpTip(tr("Apply all fixes"), tr("Sets up every clean-up the report suggests, on all stems at once.\n"
                                                              "Use Bypass All Clean-up (Ctrl+B) to compare with the original.")));
@@ -277,6 +277,12 @@ QString StemReportPanel::describeFix(const daw::StemReport& report, const daw::C
         parts << tr("transient shaper, attack %1 dB, sustain %2 dB")
                      .arg(fix.transient->attackDb, 0, 'f', 0)
                      .arg(fix.transient->sustainDb, 0, 'f', 0);
+    if (fix.resonance && fix.resonance->enabled) {
+        if (fix.resonance->harshDb > 0.0)
+            parts << tr("harshness control (2-6 kHz) up to %1 dB").arg(fix.resonance->harshDb, 0, 'f', 0);
+        if (fix.resonance->shimmerDb > 0.0)
+            parts << tr("shimmer control (8-17 kHz) up to %1 dB").arg(fix.resonance->shimmerDb, 0, 'f', 0);
+    }
     if (fix.dcRemoval && *fix.dcRemoval)
         parts << tr("DC removal");
     const QString name = fix.track < report.tracks.size() ? QString::fromStdString(report.tracks[fix.track].name) : QString();

@@ -4,9 +4,10 @@
 #pragma once
 
 // Per-track clean-up: DC removal -> Butterworth high-pass -> hum notches ->
-// spectral noise reduction -> downward expander -> transient shaper.
+// spectral stage (noise reduction, harshness and shimmer control) ->
+// downward expander -> transient shaper.
 //
-// The noise reduction works on overlapping FFT frames and the expander looks
+// The spectral stage works on overlapping FFT frames and the expander looks
 // ahead (it measures the signal kLookaheadSeconds before it is heard, so it is
 // fully open when a note starts). The chain therefore delays its output by a
 // fixed latency() frames, whichever stages are on. The engine hides this by
@@ -47,10 +48,15 @@ struct CleanupParams {
     bool transient = false;
     float transientAttackDb = 0.0f;  // -12 .. +12
     float transientSustainDb = 0.0f; // -12 .. +12
+    bool resonance = false;
+    float resonanceHarshDb = 0.0f;   // maximum cut 2-6 kHz, 0 .. 12
+    float resonanceShimmerDb = 0.0f; // maximum cut 8-17.5 kHz, 0 .. 12
     const float* noiseProfile = nullptr; // SpectralDenoiser::kBins powers for this rate, owned by the snapshot
     bool listenRemoved = false;          // output what the chain removes instead of the result
 
-    bool active() const noexcept { return dcRemoval || highPass || hum || denoise || expander || transient; }
+    bool active() const noexcept { return dcRemoval || highPass || hum || denoise || expander || transient || resonance; }
+    /// True when the spectral stage runs (noise reduction or resonance suppression).
+    bool spectral() const noexcept { return denoise || resonance; }
 
     friend bool operator==(const CleanupParams&, const CleanupParams&) = default;
 };
@@ -70,9 +76,12 @@ public:
     /// Total delay in frames: the FFT frame plus the expander lookahead. The
     /// same whichever stages are on.
     int latency() const noexcept { return latency_; }
-    /// Turning the noise reduction on or off changes how the delay is made:
+    /// Turning the spectral stage on or off changes how the delay is made:
     /// the chain must then be reset and primed again (the engine does this).
-    static bool needsRestart(const CleanupParams& from, const CleanupParams& to) noexcept { return from.denoise != to.denoise; }
+    static bool needsRestart(const CleanupParams& from, const CleanupParams& to) noexcept
+    {
+        return from.spectral() != to.spectral();
+    }
     double sampleRate() const noexcept { return sampleRate_; }
 
     /// Recomputes coefficients; filter memory is kept unless the high-pass
@@ -80,7 +89,8 @@ public:
     void setParams(const CleanupParams& params) noexcept;
     const CleanupParams& params() const noexcept { return params_; }
 
-    /// Clears filter memory, the detector and the delay line (the expander starts open).
+    /// Clears filter memory, the detectors and the delay line (the expander
+    /// starts open). The resonance detector keeps its memory.
     void reset() noexcept;
 
     /// Processes one stereo block in place. The output is delayed by latency().
@@ -95,6 +105,9 @@ public:
         minGainDb_ = gainDb_;
         return static_cast<float>(lowest);
     }
+
+    /// The spectral stage, for inspection (resonance detector state).
+    const SpectralDenoiser& spectralStage() const noexcept { return denoiser_; }
 
     /// Expander gain computer (static curve with soft knee), in dB (<= 0).
     static double expanderGainDb(double levelDb, double thresholdDb, double ratio, double rangeDb) noexcept;

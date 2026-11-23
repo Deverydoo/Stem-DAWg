@@ -384,3 +384,95 @@ TEST_CASE("Stem report measures attack times and suggests the transient shaper f
     CHECK(after->tracks[drums].loudness.samplePeakDbfs < before.tracks[drums].loudness.samplePeakDbfs + 1.5);
     CHECK(findAdvice(*after, "soft-attacks", drums) == nullptr);
 }
+
+namespace {
+
+/// Gaussian noise (independent channels) with a steady sine standing `toneDb`
+/// above it in one bin of 2048-point square-root-Hann frames, plus an
+/// optional low sine (a bass note that dominates the stem's level).
+std::shared_ptr<AudioAsset> noiseWithTone(double rms, double toneHz, double toneDb, unsigned seed, double lowAmplitude = 0.0)
+{
+    const auto frames = static_cast<std::int64_t>(kSeconds * kRate);
+    auto asset = AudioAsset::create(2, frames, kRate);
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> noise(0.0f, static_cast<float>(rms));
+    const double n = 2048.0;
+    const double tone = toneDb > -90.0 ? rms * std::sqrt(std::pow(10.0, toneDb / 10.0) * std::numbers::pi * std::numbers::pi / (2.0 * n)) : 0.0;
+    for (std::int64_t i = 0; i < frames; ++i) {
+        const double t = static_cast<double>(i) / kRate;
+        const double common = tone * std::sin(2.0 * std::numbers::pi * toneHz * t) + lowAmplitude * std::sin(2.0 * std::numbers::pi * 100.0 * t);
+        for (auto& channel : asset->channels)
+            channel[static_cast<std::size_t>(i)] = static_cast<float>(common) + noise(rng);
+    }
+    return asset;
+}
+
+} // namespace
+
+TEST_CASE("Stem report finds resonances and generator tones and suggests harshness and shimmer control",
+          "[session][stems][resonance]")
+{
+    Fixture f;
+    f.model.sampleRate = kRate;
+    const std::size_t pad = f.add("Pad", noiseWithTone(0.05, 3700.0, 14.0, 1));
+    const std::size_t hats = f.add("Hats", noiseWithTone(0.05, 16000.0, 14.0, 2));
+    const std::size_t plain = f.add("Noise", noiseWithTone(0.05, 3700.0, -99.0, 3));
+    // The same kind of peak in a stem that is almost all bass: it adds about
+    // 1 % of the mix's energy around 3.7 kHz, where the others mask it.
+    const std::size_t bass = f.add("Bass", noiseWithTone(0.005, 3700.0, 14.0, 4, 0.3));
+
+    const auto result = analyzeStems(f.model, f.pool);
+    REQUIRE(result.ok());
+    const StemReport& before = *result;
+    const ResonanceFinding& found = before.tracks[pad].harshness;
+    CHECK(found.hz == Approx(3700.0).margin(30.0));
+    CHECK(found.excessDb > 10.0);
+    CHECK(found.ringingFraction > 0.8);
+    CHECK(found.cutDb > 4.0);
+    CHECK(before.tracks[hats].shimmer.hz == Approx(16000.0).margin(30.0));
+    CHECK(before.tracks[plain].harshness.cutDb < 0.5);
+    CHECK(before.tracks[plain].shimmer.cutDb < 0.5);
+
+    const StemAdvice* harsh = findAdvice(before, "harsh-resonance", pad);
+    REQUIRE(harsh != nullptr);
+    CHECK(harsh->message.find("3.7 kHz") != std::string::npos);
+    REQUIRE(harsh->fixes.size() == 1);
+    REQUIRE(harsh->fixes[0].resonance.has_value());
+    CHECK(harsh->fixes[0].resonance->harshDb == kResonanceProbeDb);
+    CHECK(harsh->fixes[0].resonance->shimmerDb == 0.0);
+    const StemAdvice* shimmer = findAdvice(before, "shimmer-tones", hats);
+    REQUIRE(shimmer != nullptr);
+    CHECK(shimmer->message.find("16.0 kHz") != std::string::npos);
+    CHECK(findAdvice(before, "harsh-resonance", hats) == nullptr);
+    CHECK(findAdvice(before, "harsh-resonance", plain) == nullptr);
+    CHECK(findAdvice(before, "shimmer-tones", plain) == nullptr);
+    CHECK(before.tracks[bass].harshness.cutDb > 4.0); // measured...
+    CHECK(findAdvice(before, "harsh-resonance", bass) == nullptr); // ...but masked in the mix
+
+    // Both fixes on one track merge instead of replacing each other.
+    CleanupFix shimmerOnPad = shimmer->fixes[0];
+    shimmerOnPad.track = pad;
+    const TrackCleanup both = shimmerOnPad.applyTo(harsh->fixes[0].applyTo({}));
+    CHECK(both.resonance.enabled);
+    CHECK(both.resonance.harshDb == kResonanceProbeDb);
+    CHECK(both.resonance.shimmerDb == kResonanceProbeDb);
+    CHECK(describeCleanup(both) == "harshness 6 dB, shimmer 6 dB");
+
+    const auto json = toJson(before);
+    CHECK(json["tracks"][pad]["harshness"]["hz"].get<double>() == Approx(3700.0).margin(30.0));
+    CHECK(json["tracks"][plain]["harshness"].is_object());
+    bool listed = false;
+    for (const auto& item : json["advice"])
+        if (item["code"] == "harsh-resonance")
+            listed = item["fixes"][0]["resonance"]["harshDb"] == kResonanceProbeDb;
+    CHECK(listed);
+
+    // Applied, the peaks come down by the depth and the advice is gone.
+    CHECK(applyCleanupFixes(f.model, before, {harsh->fixes[0], shimmer->fixes[0]}) == 2);
+    const auto after = analyzeStems(f.model, f.pool);
+    REQUIRE(after.ok());
+    CHECK(after->tracks[pad].harshness.excessDb < found.excessDb - 4.0);
+    CHECK(after->tracks[hats].shimmer.excessDb < before.tracks[hats].shimmer.excessDb - 4.0);
+    CHECK(findAdvice(*after, "harsh-resonance", pad) == nullptr);
+    CHECK(findAdvice(*after, "shimmer-tones", hats) == nullptr);
+}

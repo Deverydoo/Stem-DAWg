@@ -33,6 +33,8 @@ void TrackCleanup::clamp() noexcept
                                defaults.transient.attackDb);
     transient.sustainDb = limit(transient.sustainDb, -TransientSettings::kMaxDb, TransientSettings::kMaxDb,
                                 defaults.transient.sustainDb);
+    resonance.harshDb = limit(resonance.harshDb, 0.0, ResonanceSettings::kMaxDb, defaults.resonance.harshDb);
+    resonance.shimmerDb = limit(resonance.shimmerDb, 0.0, ResonanceSettings::kMaxDb, defaults.resonance.shimmerDb);
     hum.frequencyHz = limit(hum.frequencyHz, 45.0, 65.0, defaults.hum.frequencyHz);
     hum.harmonics = std::clamp(hum.harmonics, 1, 8);
     denoise.reductionDb = limit(denoise.reductionDb, 0.0, 40.0, defaults.denoise.reductionDb);

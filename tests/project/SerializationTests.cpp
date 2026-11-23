@@ -120,6 +120,8 @@ TEST_CASE("Track clean-up is written only when set, optional when read, and clam
     CHECK(doc["tracks"][0]["cleanup"]["expander"]["thresholdDb"] == -47.0);
     CHECK(doc["tracks"][0]["cleanup"]["transient"]["attackDb"] == 4.5);
     CHECK(doc["tracks"][0]["cleanup"]["transient"]["sustainDb"] == -3.0);
+    CHECK(doc["tracks"][0]["cleanup"]["resonance"]["harshDb"] == 4.0);
+    CHECK(doc["tracks"][0]["cleanup"]["resonance"]["shimmerDb"] == 7.5);
     CHECK_FALSE(doc["tracks"][1].contains("cleanup")); // default chain: nothing written
 
     // Older files have no clean-up: every stage is off.
@@ -132,7 +134,8 @@ TEST_CASE("Track clean-up is written only when set, optional when read, and clam
     doc["tracks"][0]["cleanup"] = {{"dcRemoval", "yes"},
                                    {"highPass", {{"enabled", true}, {"frequencyHz", 5.0}, {"slopeDbPerOctave", 30}}},
                                    {"expander", {{"enabled", true}, {"thresholdDb", 12.0}, {"ratio", 0.5}, {"rangeDb", "a lot"}, {"releaseMs", 1e9}}},
-                                   {"transient", {{"enabled", true}, {"attackDb", 99.0}, {"sustainDb", "loud"}}}};
+                                   {"transient", {{"enabled", true}, {"attackDb", 99.0}, {"sustainDb", "loud"}}},
+                                   {"resonance", {{"enabled", true}, {"harshDb", -4.0}, {"shimmerDb", 50.0}}}};
     parsed = projectFromJson(doc);
     REQUIRE(parsed.ok());
     const TrackCleanup& c = parsed->tracks[0].cleanup;
@@ -147,6 +150,9 @@ TEST_CASE("Track clean-up is written only when set, optional when read, and clam
     CHECK(c.transient.enabled);
     CHECK(c.transient.attackDb == TransientSettings::kMaxDb);
     CHECK(c.transient.sustainDb == TransientSettings{}.sustainDb);
+    CHECK(c.resonance.enabled);
+    CHECK(c.resonance.harshDb == 0.0);
+    CHECK(c.resonance.shimmerDb == ResonanceSettings::kMaxDb);
 }
 
 TEST_CASE("Projects saved under the old Industrial DAW format id still open", "[project][serialize][regression]")

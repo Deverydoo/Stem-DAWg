@@ -4,7 +4,7 @@
 #pragma once
 
 // Editor for one track's clean-up chain (DC removal, high-pass, hum removal,
-// noise reduction, expander, transient shaper).
+// noise reduction, harshness and shimmer control, expander, transient shaper).
 // Edits apply live: every change is reported through cleanupEdited and the
 // ProjectController pushes it to the engine. The panel never owns the
 // settings; setTracks() refreshes it from the project.
@@ -113,6 +113,9 @@ private:
     ReductionMeter* meter_ = nullptr;
     QLabel* floor_ = nullptr;
     QPushButton* fromFloor_ = nullptr;
+    QGroupBox* resonance_ = nullptr;
+    QDoubleSpinBox* harsh_ = nullptr;
+    QDoubleSpinBox* shimmer_ = nullptr;
     QGroupBox* transient_ = nullptr;
     QDoubleSpinBox* attack_ = nullptr;
     QDoubleSpinBox* sustain_ = nullptr;

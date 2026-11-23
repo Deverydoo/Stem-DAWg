@@ -48,6 +48,7 @@ inline ProjectModel makeRichProject()
     t1.cleanup.expander = {true, -47.0, 3.0, 30.0, 220.0};
     t1.cleanup.hum = {true, 60.0, 3};
     t1.cleanup.transient = {true, 4.5, -3.0};
+    t1.cleanup.resonance = {true, 4.0, 7.5};
     t1.cleanup.denoise.enabled = true;
     t1.cleanup.denoise.reductionDb = 15.0;
     t1.cleanup.denoise.sensitivityDb = 2.5;

@@ -4,8 +4,9 @@ Stem separators leave artifacts that a home recording never has. M4 repairs them
 
 - **Bleed suppression:** each stem keeps a little of every other stem (the hi-hat ghosting through the vocal, the kick inside the bass). Bleed suppression turns that down, judging every stem against all the others.
 - **Transient restoration:** AI-generated drums rise to each hit slowly and sound soft. The stem report measures how slowly; a transient shaper in the clean-up chain makes the hits rise faster without making them louder.
+- **Harshness and shimmer control:** narrow peaks that keep ringing above the sound around them (a partial at 2–4 kHz that outlasts the notes, steady generator tones near 16 kHz) are turned down while they ring, and nothing else is.
 
-Harshness control and stereo repair follow (see [the roadmap](../ROADMAP.md#m4-ai-artifact-repair)).
+Stereo repair follows (see [the roadmap](../ROADMAP.md#m4-ai-artifact-repair)).
 
 ## 1. Bleed suppression (`dsp/BleedSuppressor`, `session/BleedTools`)
 
@@ -183,7 +184,74 @@ The stem report's attack time fell from 2.7 to 2.1 ms on Drums and from 3.6 to 2
   - applying the fix shortens the measured attack by at least 25 %.
 - Serialization round trip and clamping, and the snapshot carrying the settings to the engine.
 
+## 3. Harshness and shimmer control (`dsp/ResonanceSuppressor`, stem report "Harsh" / "Shimmer")
+
+### What is harsh about AI songs
+
+The long-term spectrum of a Suno song says little: a dB or two of bump around 2.5 kHz. The problem is narrow and shows up at finer resolution (2048-point frames, 23 Hz bins), measured on 24 Suno songs and the 9-stem export:
+
+- **Partials that ring through many notes.** In one song a single partial at 1.86 kHz stands 11 dB above the spectrum around it, averaged over two minutes. Others ring at 2.2, 2.5 and 3.7 kHz. They sit on notes (A#6, C#7, D#7, A#7), so they come from the music, but they outlast the notes: tracked in half-second steps, a peak stands 12 dB proud one moment and below its surroundings the next. A static EQ cut would dull the song wherever the peak is not ringing.
+- **Steady tones at fixed frequencies**: 8.0, 16.0, 16.6, 16.8 and 16.9 kHz, 6–11 dB above the high end around them, at the same frequencies in unrelated songs and in both 44.1 and 48 kHz files. They are generator artifacts, present in 63–71 % of the half-seconds of an affected song whatever the music does, and about 20 Hz wide.
+
+Both are narrow peaks that **persist** above the spectrum around them. Ordinary partials move with the melody, and noise only pokes above its surroundings at random moments. That is what the detector looks for.
+
+### The detector
+
+It works on the frames of the clean-up chain's spectral stage (the same 2048-point short-time Fourier transform as noise reduction, so turning it on adds no delay). For every frame and bin above about 1.4 kHz:
+
+- **Excess**: the bin's power over the higher of two neighbourhood averages, the bins 1/6 octave to its left and to its right, leaving out the two bins on each side of it (the peak's own skirt). A peak must stand above both sides, so a falling slope, or the cliff where a generator's low-pass cuts the high end off, does not count.
+- **Persistence**: the excess in dB, smoothed over time, rising in about 1 s and falling in about 2 s. A partial of a note that comes and goes averages out; a resonance that outlasts the notes does not. Averaging in dB matters: a bin that goes dark pulls its average down hard.
+- **Cut**: the smoothed excess above 2 dB, limited to the depth set for the range, so a peak is brought down towards its surroundings, never below. Each bin's cut also covers the bin on either side, because a partial between two bins, or one that drifts, spreads over its neighbours.
+
+The two ranges are **harshness** (2–6 kHz, fading in over the half-octave below and out over the half-octave above) and **shimmer** (8–17.5 kHz, fading in over the half-octave below and out over a quarter-octave above). Between 6 and 8 kHz the fades overlap: sibilance territory gets part of either depth.
+
+The engine resets every chain on a seek, and a detector that takes a second to settle would fade back in after every press of Play. Resonances last for the whole song, so the detector keeps its memory across resets; only preparing the chain clears it. A fresh detector averages over a few frames at first, so an export starts suppressing within a fraction of a second.
+
+### In the stem report
+
+Every stem runs through the same detector (one frame every 2048 samples is enough for statistics over seconds). For each range the report keeps the strongest peak: its frequency, the mean cut it would get at 6 dB of depth, the share of the song during which it is cut at all, and how high it stands above its surroundings while it is (`harshness` and `shimmer` in the JSON, *Harsh* and *Shimmer* columns in `stem-report`).
+
+**Advice** (*harsh-resonance*, *shimmer-tones*) needs a mean cut of 2 dB or more, and the stem must supply at least 10 % of all stems' energy in the band where the peak sits. On the 9-stem export the bass has a 2 kHz peak that would qualify, but the bass supplies 4 % of the mix's energy there, so the other stems mask it. The flagged songs measure 2.1–3.7 dB (harshness, 5 of 24) and 2.0–3.9 dB (shimmer, 3 of 24); the others measure up to 1.9 dB, and a synthetic melody of bright 1 s notes reaches 1.8 dB. The margin is narrow: two songs sit at 1.9 dB, one of them on a 16.9 kHz generator tone, and the controls help there too even though the report stays quiet. For example: "*a resonance at 1.9 kHz rings about 10 dB above the sound around it during 86 % of the song, which sounds harsh*". The fix switches on the range with 6 dB of depth; a harshness fix and a shimmer fix for the same stem merge.
+
+### What did not work, and why
+
+| Attempt | Result |
+|---|---|
+| Smoothing over 30 ms (quick, like a compressor) | Every held note's bright partials were cut: a synthetic melody with 250 ms notes lost 3 dB at 2–6 kHz, white noise 0.4 dB. |
+| The envelope as one power average around the bin | Bins just below a generator's 18.5 kHz low-pass cliff stood above it and were cut by 3–5 dB. |
+| The envelope as an average in dB | The deep gaps between the partials of a bright note pull the average down, so every partial looked like a resonance. |
+| A cut on the peak bin only | A partial between two bins kept half its energy in the neighbour: a 16 kHz line came down 2.8 dB instead of 5. |
+
+### Measured
+
+Four of the flagged songs, depth 6 dB in the flagged range, measured by the stem report before and after (height of the strongest peak above its surroundings while it rings):
+
+| Song | Peak | Before | After |
+|---|---|---|---|
+| A | 16.0 kHz line | 6.9 dB | 3.2 dB |
+| B | 16.6 kHz line | 6.0 dB | 2.9 dB (now the 16.0 kHz line) |
+| C | 2.3 kHz resonance | 6.9 dB | 4.3 dB |
+| D | 1.9 kHz resonance | 10.0 dB | 7.9 dB |
+
+Steady peaks come down by most of the way; a resonance that rings for a few seconds at a time and wanders (song D) only by about 2 dB, because the detector, slow enough to leave melodies alone, catches only part of each episode. On synthetic signals a steady tone 14 dB above white noise comes down by the full 6 dB (±0.1 dB) and the noise around it does not change. The spectral stage costs about 0.4 % of one CPU core per track (the detection itself under 0.1 %); the stem report's measurement adds a fraction of a second.
+
+### Tests
+
+- `daw_dsp_tests` `[resonance]`:
+  - steady white noise passes within 0.1 dB in both ranges;
+  - a steady tone 14 dB proud at 3.7 kHz or 16 kHz comes down by the depth, the noise around it stays, and the other range's control does nothing to it;
+  - a tone 6 dB proud comes down by less than the depth (towards its surroundings, never below), one under the threshold not at all;
+  - tones at 800 Hz, 1.3 kHz and 21.5 kHz are never touched, and one at 7 kHz gets the taper's share of the depth;
+  - a melody of 250 ms notes loses less than 0.5 dB;
+  - noise with a 12 kHz low-pass cliff is not cut below the cliff;
+  - the detector's memory survives reset and prepare clears it; depths are clamped; the chain restarts only when the spectral stage starts or stops;
+  - no allocation.
+- `daw_integration_tests` `[resonance]`:
+  - the stem report finds a 3.7 kHz resonance and a 16 kHz tone, with advice and fixes for those stems only, not for plain noise, and not for a masked peak in a bass stem;
+  - the two fixes merge on one track; the JSON lists the findings and the fixes;
+  - applied, both peaks come down by more than 4 dB and the advice is gone.
+- Serialization round trip and clamping, and the snapshot carrying the settings to the engine.
+
 ## Still to come in M4
 
-- **Harshness and "shimmer" control:** dynamic EQ driven by spectral analysis.
 - **Stereo repair:** mono low end, correlation-guided width.

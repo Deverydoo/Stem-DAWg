@@ -3,8 +3,11 @@
 
 #pragma once
 
-// Learned-profile spectral noise reduction for stationary noise (fans, air
-// conditioning, hiss, the steady part of a separation bed).
+// The clean-up chain's spectral stage: learned-profile noise reduction for
+// stationary noise (fans, air conditioning, hiss, the steady part of a
+// separation bed) and resonance suppression (harshness and shimmer control,
+// see ResonanceSuppressor). Both work on the same frames, so turning on the
+// second costs no extra delay.
 //
 // Short-time Fourier transform: kFftSize-point frames, 75 % overlap, square-root
 // Hann analysis and synthesis windows (perfect reconstruction). Both channels
@@ -17,9 +20,13 @@
 // attenuation. The noise power per bin comes from a profile measured on the
 // quietest parts of the track (session/NoiseProfile).
 //
+// The resonance gains are measured on the same input spectrum and multiply
+// the noise gains.
+//
 // Delay: exactly latency() == kFftSize frames. Real-time safe after prepare().
 
 #include <daw/dsp/Fft.h>
+#include <daw/dsp/ResonanceSuppressor.h>
 
 #include <complex>
 #include <vector>
@@ -40,8 +47,9 @@ public:
 
     SpectralDenoiser();
 
-    /// Allocates the buffers (not real-time safe) and resets.
-    void prepare();
+    /// Allocates the buffers (not real-time safe) and resets, including the
+    /// resonance detector's memory.
+    void prepare(double sampleRate = 48000.0);
     static constexpr int latency() noexcept { return kFftSize; }
 
     void setParams(const DenoiseParams& params) noexcept;
@@ -50,6 +58,12 @@ public:
     void setNoiseProfile(const float* power) noexcept;
     bool hasProfile() const noexcept { return hasProfile_; }
 
+    /// Harshness and shimmer depths; zero depths turn resonance suppression off.
+    void setResonance(const ResonanceParams& params) noexcept { resonance_.setParams(params); }
+    const ResonanceSuppressor& resonance() const noexcept { return resonance_; }
+
+    /// Clears the frames and the noise gains. The resonance detector keeps its
+    /// memory (see ResonanceSuppressor).
     void reset() noexcept;
     /// Processes a stereo block in place; the output is delayed by latency().
     void process(float* left, float* right, int numFrames) noexcept;
@@ -70,11 +84,14 @@ private:
     float noiseScale_ = 1.0f;
     float floorGain_ = 0.25f;
     bool hasProfile_ = false;
+    ResonanceSuppressor resonance_;
 
     std::vector<float> window_;
     std::vector<float> noise_;      // per bin
     std::vector<float> lastGain_;   // per bin, previous frame
     std::vector<float> lastSnr_;    // per bin, previous a-posteriori SNR
+    std::vector<float> power_;      // per bin, current frame
+    std::vector<float> gain_;       // per bin, current frame
     std::vector<float> input_[2];   // last kFftSize input samples
     std::vector<float> output_[2];  // overlap-add accumulator
     std::vector<std::complex<float>> spectrum_;

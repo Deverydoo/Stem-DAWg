@@ -21,12 +21,15 @@ std::vector<float> SpectralDenoiser::window()
     return w;
 }
 
-void SpectralDenoiser::prepare()
+void SpectralDenoiser::prepare(double sampleRate)
 {
     window_ = window();
     noise_.assign(kBins, 0.0f);
     lastGain_.assign(kBins, 1.0f);
     lastSnr_.assign(kBins, 1.0f);
+    power_.assign(kBins, 0.0f);
+    gain_.assign(kBins, 1.0f);
+    resonance_.prepare(sampleRate, kFftSize, kHop);
     for (int c = 0; c < 2; ++c) {
         input_[c].assign(kFftSize, 0.0f);
         output_[c].assign(kFftSize, 0.0f);
@@ -83,21 +86,34 @@ void SpectralDenoiser::processFrame() noexcept
         z[i] = {input_[0][static_cast<std::size_t>(i)] * w[i], input_[1][static_cast<std::size_t>(i)] * w[i]};
     fft_.forward(z);
 
-    if (hasProfile_) {
+    const bool resonance = resonance_.active();
+    if (hasProfile_ || resonance) {
+        float* power = power_.data();
+        float* gain = gain_.data();
         for (int k = 0; k < kBins; ++k) {
             const int mirror = (kFftSize - k) % kFftSize;
-            const float power = 0.25f * (std::norm(z[k]) + std::norm(z[mirror]));
-            const float noise = noise_[static_cast<std::size_t>(k)] * noiseScale_ + 1e-20f;
-            const float snr = power / noise; // a-posteriori
-            const float prior = kSmoothing * lastGain_[static_cast<std::size_t>(k)] * lastGain_[static_cast<std::size_t>(k)]
-                                    * lastSnr_[static_cast<std::size_t>(k)]
-                                + (1.0f - kSmoothing) * std::max(snr - 1.0f, 0.0f);
-            const float gain = std::max(prior / (1.0f + prior), floorGain_);
-            lastGain_[static_cast<std::size_t>(k)] = gain;
-            lastSnr_[static_cast<std::size_t>(k)] = std::min(snr, 1e6f);
-            z[k] *= gain;
+            power[k] = 0.25f * (std::norm(z[k]) + std::norm(z[mirror]));
+            gain[k] = 1.0f;
+        }
+        if (hasProfile_) {
+            for (int k = 0; k < kBins; ++k) {
+                const auto i = static_cast<std::size_t>(k);
+                const float noise = noise_[i] * noiseScale_ + 1e-20f;
+                const float snr = power[k] / noise; // a-posteriori
+                const float prior = kSmoothing * lastGain_[i] * lastGain_[i] * lastSnr_[i]
+                                    + (1.0f - kSmoothing) * std::max(snr - 1.0f, 0.0f);
+                gain[k] = std::max(prior / (1.0f + prior), floorGain_);
+                lastGain_[i] = gain[k];
+                lastSnr_[i] = std::min(snr, 1e6f);
+            }
+        }
+        if (resonance)
+            resonance_.process(power, gain);
+        for (int k = 0; k < kBins; ++k) {
+            const int mirror = (kFftSize - k) % kFftSize;
+            z[k] *= gain[k];
             if (mirror != k)
-                z[mirror] *= gain;
+                z[mirror] *= gain[k];
         }
     }
 

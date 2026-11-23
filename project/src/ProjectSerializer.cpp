@@ -82,7 +82,9 @@ json cleanupToJson(const TrackCleanup& c)
             {"hum", {{"enabled", c.hum.enabled}, {"frequencyHz", c.hum.frequencyHz}, {"harmonics", c.hum.harmonics}}},
             {"denoise", denoiseToJson(c.denoise)},
             {"transient",
-             {{"enabled", c.transient.enabled}, {"attackDb", c.transient.attackDb}, {"sustainDb", c.transient.sustainDb}}}};
+             {{"enabled", c.transient.enabled}, {"attackDb", c.transient.attackDb}, {"sustainDb", c.transient.sustainDb}}},
+            {"resonance",
+             {{"enabled", c.resonance.enabled}, {"harshDb", c.resonance.harshDb}, {"shimmerDb", c.resonance.shimmerDb}}}};
 }
 
 // Missing or malformed values fall back to the defaults; numbers are clamped
@@ -118,6 +120,11 @@ TrackCleanup cleanupFromJson(const json& j)
         c.transient.enabled = flag(*tr, "enabled", c.transient.enabled);
         c.transient.attackDb = number(*tr, "attackDb", c.transient.attackDb);
         c.transient.sustainDb = number(*tr, "sustainDb", c.transient.sustainDb);
+    }
+    if (const auto rs = j.find("resonance"); rs != j.end() && rs->is_object()) {
+        c.resonance.enabled = flag(*rs, "enabled", c.resonance.enabled);
+        c.resonance.harshDb = number(*rs, "harshDb", c.resonance.harshDb);
+        c.resonance.shimmerDb = number(*rs, "shimmerDb", c.resonance.shimmerDb);
     }
     if (const auto hum = j.find("hum"); hum != j.end() && hum->is_object()) {
         c.hum.enabled = flag(*hum, "enabled", c.hum.enabled);

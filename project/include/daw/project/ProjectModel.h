@@ -131,8 +131,23 @@ struct TransientSettings {
     friend bool operator==(const TransientSettings&, const TransientSettings&) = default;
 };
 
+/// Harshness and shimmer control: turns down narrow peaks that persist above
+/// the surrounding spectrum, by at most the set depth per range. In AI-generated
+/// music these are partials ringing through many notes (2-6 kHz) and steady
+/// generator tones (8-17.5 kHz). A depth of 0 leaves that range alone.
+struct ResonanceSettings {
+    static constexpr double kMaxDb = 12.0;
+
+    bool enabled = false;
+    double harshDb = 6.0;   // maximum cut 2-6 kHz, 0 .. 12
+    double shimmerDb = 6.0; // maximum cut 8-17.5 kHz, 0 .. 12
+
+    friend bool operator==(const ResonanceSettings&, const ResonanceSettings&) = default;
+};
+
 /// Non-destructive per-track clean-up, applied before the fader in this order:
-/// DC removal, high-pass, hum removal, noise reduction, expander, transient shaper.
+/// DC removal, high-pass, hum removal, noise reduction and resonance
+/// suppression (one spectral stage), expander, transient shaper.
 struct TrackCleanup {
     bool bypassed = false; // keeps the settings but plays the track unprocessed
     bool dcRemoval = false;
@@ -141,11 +156,13 @@ struct TrackCleanup {
     DenoiseSettings denoise;
     ExpanderSettings expander;
     TransientSettings transient;
+    ResonanceSettings resonance;
 
     /// True when any stage is switched on (regardless of bypass).
     bool hasStages() const noexcept
     {
-        return dcRemoval || highPass.enabled || hum.enabled || denoise.enabled || expander.enabled || transient.enabled;
+        return dcRemoval || highPass.enabled || hum.enabled || denoise.enabled || expander.enabled || transient.enabled
+               || resonance.enabled;
     }
     /// True when the chain changes the sound.
     bool active() const noexcept { return !bypassed && hasStages(); }
