@@ -11,6 +11,7 @@ Stem DAWg is licensed under the **GNU Affero General Public License v3.0 or late
 | [TinySoundFont and TinyMidiLoader](https://github.com/schellingb/TinySoundFont) | commit a3621a1 | MIT | MIDI file loading and SoundFont synthesis | Single-header libraries, compiled into the media module. |
 | [XZ Embedded](https://github.com/tukaani-project/xz-embedded) | 2024-12-30 | 0BSD | Unpacking the SoundFont download (.xz) | Decoder only. |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.7.1 | BSL-1.0 | Unit tests | Test-only, not shipped. |
+| Microsoft Visual C++ runtime | 14.44 | Microsoft Visual Studio redistributable ("Distributable Code") | C++ standard library at run time | Binary releases only: the unmodified redistributable DLLs (`vcruntime140*.dll`, `msvcp140*.dll`, `concrt140.dll`) ship beside the executable so no separate installer is needed. They are system libraries in the sense of AGPL section 1. |
 
 ## Downloaded at run time (not part of the source or the build)
 

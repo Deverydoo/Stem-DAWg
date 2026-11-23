@@ -17,7 +17,7 @@
 
 **Stem DAWg** is a music cleaner and mastering tool. It is not another general-purpose DAW. You load the stems from Suno (or any stem export) or your own recordings, and it helps you remove what ruins them: separation bleed, noise beds, fan hiss, harsh and phasey high ends, stems that sum into clipping. Then you balance and master the result.
 
-> **Status: early development (Milestone 4 in progress).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), suppresses bleed between stems, sharpens soft AI drums, tames harsh resonances and generator whine, and exports stems today. The rest of AI-artifact repair (M4) and mastering (M5) are next; see the [roadmap](docs/ROADMAP.md).
+> **Status: early development (Milestone 4 in progress).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), suppresses bleed between stems, sharpens soft AI drums, tames harsh resonances and generator whine, and exports the finished mix today. The rest of AI-artifact repair (M4) and mastering (M5) are next; see the [roadmap](docs/ROADMAP.md).
 
 ## What works today
 
