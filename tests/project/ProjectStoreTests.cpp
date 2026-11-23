@@ -135,3 +135,45 @@ TEST_CASE("Referenced media keeps an absolute path", "[project][store][media]")
     REQUIRE_FALSE(fs::exists(dir / "P" / "Media" / "Original" / "elsewhere.wav"));
     REQUIRE(ProjectStore::stageMediaFile(dir / "P", dir / "nope.wav", MediaStorage::Copied).error().code == ErrorCode::NotFound);
 }
+
+TEST_CASE("Closing a project deletes the rendered copies nothing uses any more", "[project][store]")
+{
+    TempDir dir("processed");
+    const fs::path root = dir.path();
+    ProjectModel model = makeRichProject();
+    auto copyOf = [&](const std::string& file) {
+        MediaRef ref = model.media.front();
+        ref.id = MediaId::generate();
+        ref.name = file;
+        ref.path = "Media/Processed/" + file;
+        ref.derivation = MediaDerivation{model.media.front().id, "bleed-suppress", 18.0};
+        return ref;
+    };
+    model.media.push_back(copyOf("Kept (bleed).wav"));
+    REQUIRE(ProjectStore::save(root, model).ok());
+    ProjectModel autosaved = model;
+    autosaved.media.push_back(copyOf("Autosaved (bleed).wav"));
+    REQUIRE(ProjectStore::writeAutosave(root, autosaved).ok());
+    const fs::path processed = root / "Media" / "Processed";
+    for (const char* file : {"Kept (bleed).wav", "Autosaved (bleed).wav", "Undone (bleed).wav", "Replaced (voice).wav"})
+        REQUIRE(writeFileAtomically(processed / utf8ToPath(file), std::string("audio")).ok());
+
+    const auto removed = ProjectStore::removeUnusedProcessedMedia(root);
+    REQUIRE(removed.ok());
+    CHECK(*removed == 2);
+    CHECK(fs::exists(processed / "Kept (bleed).wav"));
+    CHECK(fs::exists(processed / "Autosaved (bleed).wav"));
+    CHECK_FALSE(fs::exists(processed / "Undone (bleed).wav"));
+    CHECK_FALSE(fs::exists(processed / "Replaced (voice).wav"));
+    CHECK(*ProjectStore::removeUnusedProcessedMedia(root) == 0);
+
+    // A manifest that cannot be read deletes nothing.
+    REQUIRE(writeFileAtomically(processed / "Unknown.wav", std::string("audio")).ok());
+    REQUIRE(writeFileAtomically(root / ProjectStore::kManifestName, std::string("{ not json")).ok());
+    CHECK_FALSE(ProjectStore::removeUnusedProcessedMedia(root).ok());
+    CHECK(fs::exists(processed / "Unknown.wav"));
+
+    // No folder, nothing to do.
+    TempDir empty("noprocessed");
+    CHECK(*ProjectStore::removeUnusedProcessedMedia(empty.path()) == 0);
+}

@@ -301,7 +301,7 @@ Presets/  PluginStates/  Backups/  Exports/
 
 - **Copied** media (default) lives in `Media/Original` with a project-relative path, so the folder is portable; a test moves it to a Unicode-named path and reopens it. Name clashes become `name (2).wav`.
 - **Referenced** media keeps an absolute path.
-- **Processed** copies (voice denoise, added in M3) live in `Media/Processed`. Their media entry carries `"derivedFrom": {"source", "process", "amountDb"}`, naming the media they were made from, which stays in the project; validation rejects a copy whose source is missing.
+- **Processed** copies (voice denoise, added in M3; bleed suppression, M4) live in `Media/Processed`. Their media entry carries `"derivedFrom": {"source", "process", "amountDb"}` (`process` is `voice-denoise` or `bleed-suppress`), naming the media they were made from, which stays in the project; validation rejects a copy whose source is missing. Copies that neither the manifest nor the autosave uses are deleted when the project is closed; a clip whose copy is missing on open plays the original.
 
 ### 7.4 Save protocol, autosave and migrations
 
@@ -398,7 +398,7 @@ The other five workspaces (Mixer, Piano Roll, Spectral, Reconstruction, Masterin
 
 ## 11. Testing strategy
 
-Run with `ctest --preset local-debug` (or `-C Release`). There are 184 CTest cases in 7 executables (as of M3), all generated audio (no binary fixtures):
+Run with `ctest --preset local-debug` (or `-C Release`). There are 194 CTest cases in 7 executables (as of M4), all generated audio (no binary fixtures):
 
 | Binary | Covers |
 |--------|--------|

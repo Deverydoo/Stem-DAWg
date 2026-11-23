@@ -90,6 +90,29 @@ TEST_CASE("A track plays a processed copy and goes back to its original", "[sess
     CHECK_FALSE(validateProject(broken).ok());
 }
 
+TEST_CASE("Clips whose processed copy is gone play their original again", "[session][voice]")
+{
+    TempDir dir("missingcopy");
+    ProjectModel model = makeEmptyProject("missing");
+    const MediaRef recording = mediaRef("Take");
+    model.media.push_back(recording);
+    const TrackId vocal = addMediaAsNewTrack(model, recording, 0);
+    const MediaRef copy = mediaRef("Take (bleed)", MediaDerivation{recording.id, "bleed-suppress", 18.0});
+    REQUIRE(applyProcessedMedia(model, vocal, {copy}));
+
+    // The copy's file exists: nothing changes.
+    REQUIRE(writeFileAtomically(dir / utf8ToPath(copy.path), std::string("audio")).ok());
+    CHECK(fallBackFromMissingProcessedMedia(model, dir.path()) == 0);
+    CHECK(model.findTrack(vocal)->clips[0].media == copy.id);
+
+    // Gone: the clip plays the original and the copy leaves the model.
+    std::filesystem::remove(dir / utf8ToPath(copy.path));
+    CHECK(fallBackFromMissingProcessedMedia(model, dir.path()) == 1);
+    CHECK(model.findTrack(vocal)->clips[0].media == recording.id);
+    CHECK(model.findMedia(copy.id) == nullptr);
+    CHECK(validateProject(model).ok());
+}
+
 TEST_CASE("The voice model package is verified before it is installed", "[session][voice]")
 {
     TempDir dir("voicemodel");

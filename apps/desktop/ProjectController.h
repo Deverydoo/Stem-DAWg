@@ -12,6 +12,7 @@
 #include <daw/core/CancellationToken.h>
 #include <daw/project/ProjectModel.h>
 #include <daw/session/MediaPool.h>
+#include <daw/session/BleedTools.h>
 #include <daw/session/NoiseTools.h>
 #include <daw/session/VoiceTools.h>
 #include <daw/session/Renderer.h>
@@ -113,9 +114,15 @@ public:
     /// background and makes the track play the result (one undo step). The
     /// model must be installed (daw::isVoiceModelInstalled).
     void voiceDenoise(const daw::TrackId& track, double reductionDb);
-    /// The track plays its original recording again (one undo step).
-    void revertVoiceDenoise(const daw::TrackId& track);
-    bool isVoiceDenoiseRunning() const noexcept { return voiceJobs_ > 0; }
+    /// Renders bleed-suppressed copies of `tracks`, each judged against every
+    /// track of recorded audio, in the background, and makes them play the
+    /// copies (one undo step).
+    void suppressBleed(const std::vector<daw::TrackId>& tracks, const daw::BleedStrength& strength);
+    /// The track plays its original recording again, undoing voice denoise or
+    /// bleed suppression (one undo step).
+    void revertProcessing(const daw::TrackId& track);
+    /// A voice denoise or bleed suppression is rendering.
+    bool isRenderRunning() const noexcept { return voiceJobs_ + bleedJobs_ > 0; }
 
     // Export metadata.
     /// Profile assigned to new projects (does not touch the open project).
@@ -151,6 +158,9 @@ Q_SIGNALS:
     /// Voice denoise finished on a track and took away this much of its loudest
     /// parts (dB, negative): the model may be treating the voice as noise.
     void voiceLossWarning(const QString& trackName, double voiceChangeDb);
+    /// Bleed suppression took this much (dB, negative) of the louder parts of
+    /// these tracks: they may mostly duplicate other stems.
+    void bleedLossWarning(const QStringList& trackNames, double worstChangeDb);
 
 private:
     void resetSession();
@@ -211,6 +221,7 @@ private:
     std::uint64_t snapshotVersion_ = 0;
     std::shared_ptr<daw::VoiceDenoiser> voiceModel_; // loaded on first use
     int voiceJobs_ = 0;
+    int bleedJobs_ = 0;
     bool cleanupBypassed_ = false;
     bool listenRemoved_ = false;
     int pendingJobs_ = 0;

@@ -58,7 +58,7 @@ Milestone 1, the engineering foundation, is done: the engine, projects, waveform
 - **Listen to what's removed** ✅ **done:** Listen to Removed (Ctrl+Shift+B) plays exactly what the clean-up takes away; Bypass Clean-up (Ctrl+B) is the A/B.
 
 ### M4: AI-artifact repair
-- **Cross-stem bleed suppression:** estimate each stem's leakage into the others and mask it.
+- **Cross-stem bleed suppression** ✅ **done:** every stem is judged against all the others. Its share of each time-frequency bin is sharpened, so it is turned down where another stem owns the sound; bins that stems genuinely share are left alone. It renders processed copies (non-destructive, undoable). On a 9-stem Suno export the noise beds between notes dropped by 11–19 dB, while the music changed by 0.1–1.6 dB. See [M4-Artifact-Repair.md](milestone-4/M4-Artifact-Repair.md).
 - **Transient restoration** for smeared drums: re-sharpen attacks using onset detection, which already exists.
 - **Harshness and "shimmer" control:** dynamic EQ in the 2–6 kHz and 8–16 kHz bands, driven by spectral analysis rather than static cuts.
 - **Stereo repair:** mono below ~120 Hz, correlation-guided width correction.

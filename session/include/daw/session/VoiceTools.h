@@ -101,6 +101,10 @@ const MediaRef* originalMediaOf(const ProjectModel& model, const MediaId& media)
 /// The distinct original media the track's clips play (before any processing).
 std::vector<MediaRef> trackOriginalMedia(const ProjectModel& model, const TrackId& track);
 
+/// The rendered process the track's clips play (voice denoise, bleed
+/// suppression...), when every clip plays media processed the same way.
+std::optional<MediaDerivation> trackProcessing(const ProjectModel& model, const TrackId& track);
+
 /// The voice denoise the track's clips play, when every clip plays voice-denoised media.
 std::optional<MediaDerivation> trackVoiceDenoise(const ProjectModel& model, const TrackId& track);
 
@@ -112,5 +116,10 @@ bool applyProcessedMedia(ProjectModel& model, const TrackId& track, const std::v
 /// Makes the track's clips play their original media again. Returns false
 /// when the track plays no processed media.
 bool revertTrackProcessing(ProjectModel& model, const TrackId& track);
+
+/// Clips playing a processed copy whose file is gone (deleted as unused when
+/// the project was closed, then a backup was restored) play their original
+/// again. Returns how many clips changed.
+std::size_t fallBackFromMissingProcessedMedia(ProjectModel& model, const std::filesystem::path& projectRoot);
 
 } // namespace daw

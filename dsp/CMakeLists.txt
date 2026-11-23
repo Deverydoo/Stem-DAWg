@@ -11,5 +11,6 @@ daw_add_module(dsp
         src/CleanupChain.cpp
         src/SpectralDenoiser.cpp
         src/DeepFilterDsp.cpp
+        src/BleedSuppressor.cpp
     PUBLIC_DEPS
         daw::core)

@@ -51,6 +51,14 @@ public:
     static Result<ProjectModel> loadAutosave(const std::filesystem::path& root);
     static void discardAutosave(const std::filesystem::path& root);
 
+    /// Deletes the files in Media/Processed that neither the saved manifest
+    /// nor the autosave uses: rendered copies replaced or undone while the
+    /// project was open (kept until then for undo). Older backups of the
+    /// manifest are not consulted; a backup restored later plays the original
+    /// recordings where its copies are gone. Deletes nothing when the manifest
+    /// cannot be read. Returns how many files were deleted.
+    static Result<std::size_t> removeUnusedProcessedMedia(const std::filesystem::path& root);
+
     /// Copies (Copied) or validates (Referenced) a source file and returns the
     /// path string to store in MediaRef::path.
     static Result<std::string> stageMediaFile(const std::filesystem::path& root, const std::filesystem::path& source,

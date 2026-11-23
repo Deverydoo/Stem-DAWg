@@ -143,4 +143,4 @@ Dragging across the lanes now selects a stretch of time; dragging on the ruler s
 ## Still open
 
 - **Singing:** a denoise model that keeps sung and effected vocals intact.
-- **Disk space:** processed copies that no clip plays any more stay in `Media/Processed` (undo may need them). They should be cleaned up when the project is closed.
+- ~~**Disk space:** processed copies that no clip plays any more stay in `Media/Processed`.~~ Done in M4: they are deleted when the project is closed (see [M4](../milestone-4/M4-Artifact-Repair.md#disk-space)).

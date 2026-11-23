@@ -3,6 +3,8 @@
 
 #include "CleanupPanel.h"
 
+#include <daw/session/BleedTools.h>
+
 #include "HelpText.h"
 
 #include <QCheckBox>
@@ -96,6 +98,47 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     reset_ = new QPushButton(tr("Reset"), this);
     reset_->setToolTip(helpTip(tr("Reset"), tr("Switches every stage off and restores the default settings for this track.")));
 
+    // Bleed suppression (stems): rendered against every other stem, not live.
+    bleed_ = new QGroupBox(tr("Bleed suppression (stems)"), this);
+    bleed_->setToolTip(helpTip(tr("Bleed suppression"),
+                               tr("Compares every stem with all the others and turns each one down wherever\n"
+                                  "another stem owns the sound: the hi-hat ghosting through the vocal, the kick\n"
+                                  "inside the bass. It renders a cleaned copy of the stem, which the track then\n"
+                                  "plays; the original stays in the project (Original switches back).")));
+    bleedState_ = new QLabel(bleed_);
+    bleedState_->setWordWrap(true);
+    bleedState_->setStyleSheet(QStringLiteral("color: #9a9da5;"));
+    bleedStrength_ = new QComboBox(bleed_);
+    for (const daw::BleedStrength& s : daw::kBleedStrengths)
+        bleedStrength_->addItem(tr(s.name), static_cast<double>(s.reductionDb));
+    bleedStrength_->setCurrentIndex(1);
+    bleedStrength_->setToolTip(helpTip(tr("Strength"), tr("Light keeps more of what stems share;\n"
+                                                          "Strong separates hardest (up to 24 dB), and can thin\n"
+                                                          "parts that several stems play together.")));
+    bleedApply_ = new QPushButton(tr("This Track"), bleed_);
+    bleedApply_->setToolTip(helpTip(tr("Suppress bleed in this track"),
+                                    tr("Renders this stem, judged against every other stem\n"
+                                       "(a few seconds per song). Ctrl+Z undoes it.")));
+    bleedApplyAll_ = new QPushButton(tr("All Stems"), bleed_);
+    bleedApplyAll_->setToolTip(helpTip(tr("Suppress bleed in every stem"),
+                                       tr("Renders every stem that plays recorded audio, in one undo step.")));
+    bleedRevert_ = new QPushButton(tr("Original"), bleed_);
+    bleedRevert_->setToolTip(helpTip(tr("Original recording"), tr("The track plays its original recording again.")));
+    // Two rows, so the panel stays narrow.
+    auto* bleedRow = new QHBoxLayout;
+    bleedRow->addWidget(new QLabel(tr("Strength"), bleed_));
+    bleedRow->addWidget(bleedStrength_);
+    bleedRow->addStretch(1);
+    bleedRow->addWidget(bleedRevert_);
+    auto* bleedButtons = new QHBoxLayout;
+    bleedButtons->addStretch(1);
+    bleedButtons->addWidget(bleedApply_);
+    bleedButtons->addWidget(bleedApplyAll_);
+    auto* bleedLayout = new QVBoxLayout(bleed_);
+    bleedLayout->addWidget(bleedState_);
+    bleedLayout->addLayout(bleedRow);
+    bleedLayout->addLayout(bleedButtons);
+
     // Voice denoise (speech): rendered by the neural model, not live.
     voice_ = new QGroupBox(tr("Voice denoise (speech, AI)"), this);
     voice_->setToolTip(helpTip(tr("Voice denoise"), tr("A neural network (DeepFilterNet3) separates speech from any noise:\n"
@@ -122,11 +165,14 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     voiceRow->addWidget(new QLabel(tr("Reduction"), voice_));
     voiceRow->addWidget(voiceReduction_);
     voiceRow->addStretch(1);
-    voiceRow->addWidget(voiceApply_);
     voiceRow->addWidget(voiceRevert_);
+    auto* voiceButtons = new QHBoxLayout;
+    voiceButtons->addStretch(1);
+    voiceButtons->addWidget(voiceApply_);
     auto* voiceLayout = new QVBoxLayout(voice_);
     voiceLayout->addWidget(voiceState_);
     voiceLayout->addLayout(voiceRow);
+    voiceLayout->addLayout(voiceButtons);
 
     dc_ = new QCheckBox(tr("DC removal"), this);
     dc_->setToolTip(helpTip(tr("DC removal"), tr("Removes a constant offset from the waveform (a 5 Hz high-pass).\n"
@@ -284,8 +330,8 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     exForm->addRow(floor_);
     exForm->addRow(fromFloor_);
 
-    auto* hint = new QLabel(tr("Voice denoise renders a copy; the rest is applied live, before the fader, in this order. "
-                               "Ctrl+B compares with the original."),
+    auto* hint = new QLabel(tr("Bleed suppression and voice denoise render a copy; the rest is applied live, before the "
+                               "fader, in this order. Ctrl+B compares with the original."),
                             this);
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color: #7d8088;"));
@@ -302,6 +348,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     auto* editorLayout = new QVBoxLayout(editor_);
     editorLayout->setContentsMargins(0, 0, 0, 0);
     editorLayout->addLayout(top);
+    editorLayout->addWidget(bleed_);
     editorLayout->addWidget(voice_);
     editorLayout->addWidget(dc_);
     editorLayout->addWidget(highPass_);
@@ -366,7 +413,17 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     });
     connect(voiceRevert_, &QPushButton::clicked, this, [this] {
         if (const CleanupTrackInfo* info = current())
-            Q_EMIT voiceRevertRequested(info->id);
+            Q_EMIT revertRequested(info->id);
+    });
+    connect(bleedApply_, &QPushButton::clicked, this, [this] {
+        if (const CleanupTrackInfo* info = current())
+            Q_EMIT bleedRequested(info->id, bleedStrength_->currentData().toDouble());
+    });
+    connect(bleedApplyAll_, &QPushButton::clicked, this,
+            [this] { Q_EMIT bleedRequested(QString(), bleedStrength_->currentData().toDouble()); });
+    connect(bleedRevert_, &QPushButton::clicked, this, [this] {
+        if (const CleanupTrackInfo* info = current())
+            Q_EMIT revertRequested(info->id);
     });
     connect(hpSlope_, &QComboBox::currentIndexChanged, this, &CleanupPanel::edited);
     for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_})
@@ -497,12 +554,28 @@ void CleanupPanel::showCurrent()
         if (index >= 0)
             voiceReduction_->setCurrentIndex(index);
     } else {
-        voiceState_->setText(tr("Off: the track plays its original recording."));
+        voiceState_->setText(info->bleedDb ? tr("Off.") : tr("Off: the track plays its original recording."));
     }
-    voiceState_->setText(info->voiceDenoiseRunning ? tr("Rendering...") : voiceState_->text());
+    voiceState_->setText(info->renderRunning ? tr("Rendering...") : voiceState_->text());
     voiceApply_->setText(info->voiceDenoiseDb ? tr("Re-apply") : tr("Apply"));
-    voiceApply_->setEnabled(!info->voiceDenoiseRunning);
-    voiceRevert_->setEnabled(info->voiceDenoiseDb.has_value() && !info->voiceDenoiseRunning);
+    voiceApply_->setEnabled(!info->renderRunning);
+    voiceRevert_->setEnabled(info->voiceDenoiseDb.has_value() && !info->renderRunning);
+
+    if (info->bleedDb) {
+        const daw::BleedStrength& strength = daw::bleedStrengthFor(*info->bleedDb);
+        bleedState_->setText(tr("On: the track plays a copy with the other stems' bleed turned down (%1).").arg(tr(strength.name)));
+        const int index = bleedStrength_->findData(static_cast<double>(strength.reductionDb));
+        if (index >= 0)
+            bleedStrength_->setCurrentIndex(index);
+    } else if (!info->bleedAvailable) {
+        bleedState_->setText(tr("Needs at least two tracks of recorded audio (stems) to compare."));
+    } else {
+        bleedState_->setText(info->voiceDenoiseDb ? tr("Off.") : tr("Off: the track plays its original recording."));
+    }
+    bleedState_->setText(info->renderRunning ? tr("Rendering...") : bleedState_->text());
+    bleedApply_->setEnabled(info->bleedAvailable && !info->renderRunning);
+    bleedApplyAll_->setEnabled(info->bleedAvailable && !info->renderRunning);
+    bleedRevert_->setEnabled(info->bleedDb.has_value() && !info->renderRunning);
     bypass_->setChecked(c.bypassed);
     dc_->setChecked(c.dcRemoval);
     highPass_->setChecked(c.highPass.enabled);

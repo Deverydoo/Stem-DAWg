@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <utility>
 
 namespace fs = std::filesystem;
@@ -117,6 +118,8 @@ ProjectController::~ProjectController()
     if (untitled_) {
         std::error_code ec;
         fs::remove_all(root_, ec);
+    } else if (!root_.empty()) {
+        (void)daw::ProjectStore::removeUnusedProcessedMedia(root_); // copies kept only for undo
     }
 }
 
@@ -167,6 +170,7 @@ void ProjectController::resetSession()
     stemReportWanted_ = false;
     ++generation_;
     voiceJobs_ = 0; // their results are dropped with the old project
+    bleedJobs_ = 0;
     analysis_.cancelAll();
     engine_.stop();
     pool_.clear();
@@ -178,6 +182,8 @@ void ProjectController::resetSession()
     if (untitled_ && !root_.empty()) {
         std::error_code ec;
         fs::remove_all(root_, ec);
+    } else if (!root_.empty()) {
+        (void)daw::ProjectStore::removeUnusedProcessedMedia(root_); // copies kept only for undo
     }
 }
 
@@ -218,7 +224,8 @@ bool ProjectController::openProject(const QString& directory, bool recoverAutosa
     model_ = std::move(*loaded);
     root_ = dir;
     untitled_ = false;
-    setDirty(recoverAutosave);
+    const std::size_t fallBacks = daw::fallBackFromMissingProcessedMedia(model_, root_);
+    setDirty(recoverAutosave || fallBacks > 0);
     pendingPlayhead_ = model_.playhead;
     rebuildSnapshot();
     Q_EMIT projectChanged();
@@ -228,7 +235,15 @@ bool ProjectController::openProject(const QString& directory, bool recoverAutosa
     stemReportWanted_ = true;
     loadAllMedia();
     maybeRunStemReport(); // a project without media
-    Q_EMIT statusMessage(tr("Opened %1").arg(directory));
+    if (fallBacks == 0)
+        Q_EMIT statusMessage(tr("Opened %1").arg(directory));
+    else
+        Q_EMIT statusMessage((fallBacks == 1 ? tr("Opened %1. A clip plays its original recording: its processed copy is gone "
+                                                  "(apply the clean-up again).")
+                                             : tr("Opened %1. %2 clips play their original recording: their processed copies "
+                                                  "are gone (apply the clean-up again)."))
+                                 .arg(directory)
+                                 .arg(fallBacks));
     return true;
 }
 
@@ -731,7 +746,106 @@ void ProjectController::voiceDenoise(const daw::TrackId& id, double reductionDb)
     Q_EMIT mixerChanged();
 }
 
-void ProjectController::revertVoiceDenoise(const daw::TrackId& id)
+void ProjectController::suppressBleed(const std::vector<daw::TrackId>& tracks, const daw::BleedStrength& strength)
+{
+    if (tracks.empty() || isRenderRunning())
+        return;
+    // Every original taking part must be decoded; the job holds them.
+    std::map<daw::MediaId, daw::AudioAssetPtr> originals;
+    for (const daw::TrackId& id : daw::bleedTracks(model_))
+        for (const daw::MediaRef& media : daw::trackOriginalMedia(model_, id)) {
+            const auto loaded = pool_.get(media.id);
+            if (!loaded || !loaded->original) {
+                Q_EMIT statusMessage(tr("The stems are still loading; try again in a moment."));
+                return;
+            }
+            originals[media.id] = loaded->original;
+        }
+    struct Output {
+        std::vector<daw::BleedTrackOutcome> outcomes;
+        std::optional<daw::Error> error;
+    };
+    const QString label = tracks.size() == 1 && model_.findTrack(tracks[0]) != nullptr
+                              ? QString::fromStdString(model_.findTrack(tracks[0])->name)
+                              : tr("%1 stems").arg(tracks.size());
+    Q_EMIT statusMessage(tr("Bleed suppression: %1...").arg(label));
+    ++bleedJobs_;
+    const std::filesystem::path root = root_;
+    const double rate = engineRate_;
+    const auto token = cancel_->token();
+    const daw::ProjectModel snapshot = model_;
+    const daw::BleedStrength* chosen = &strength;
+    QPointer<ProjectController> self(this);
+    runInBackground(
+        [self, snapshot, tracks, root, rate, chosen, token, label, originals = std::move(originals)]() {
+            Output out;
+            int lastPercent = -1;
+            auto result = daw::suppressBleed(
+                root, snapshot,
+                [&originals](const daw::MediaId& id) {
+                    const auto it = originals.find(id);
+                    return it == originals.end() ? daw::AudioAssetPtr{} : it->second;
+                },
+                tracks, *chosen, rate, token, [&](double p) {
+                    const int percent = static_cast<int>(100.0 * p);
+                    if (percent / 10 == lastPercent / 10)
+                        return;
+                    lastPercent = percent;
+                    QMetaObject::invokeMethod(qApp, [self, label, percent] {
+                        if (self)
+                            Q_EMIT self->statusMessage(tr("Bleed suppression: %1 %2%").arg(label).arg(percent));
+                    });
+                });
+            if (result)
+                out.outcomes = std::move(*result);
+            else
+                out.error = result.error();
+            return out;
+        },
+        [this, label, chosen](Output& out) {
+            --bleedJobs_;
+            if (out.error) {
+                if (out.error->code != daw::ErrorCode::Cancelled)
+                    Q_EMIT statusMessage(tr("Bleed suppression failed: %1").arg(QString::fromStdString(out.error->message)));
+                Q_EMIT mixerChanged();
+                return;
+            }
+            double worstMusic = 0.0, quietest = 0.0;
+            QStringList losing;
+            for (daw::BleedTrackOutcome& outcome : out.outcomes) {
+                worstMusic = std::min(worstMusic, outcome.musicChangeDb);
+                quietest = std::min(quietest, outcome.bleedChangeDb);
+                if (outcome.musicChangeDb < daw::kBleedLossWarningDb)
+                    if (const daw::Track* track = model_.findTrack(outcome.track))
+                        losing << QString::fromStdString(track->name);
+                for (daw::LoadedMedia& loaded : outcome.loaded)
+                    pool_.put(std::move(loaded));
+            }
+            const bool changed = applyEdit(tr("Bleed Suppression"), {}, [&](daw::ProjectModel& m) {
+                bool any = false;
+                for (const daw::BleedTrackOutcome& outcome : out.outcomes)
+                    any = daw::applyProcessedMedia(m, outcome.track, outcome.media) || any;
+                return any;
+            });
+            if (engineRate_ != 0.0)
+                retargetAllMedia(); // the device may have changed while it ran
+            Q_EMIT mixerChanged();
+            if (!changed)
+                return;
+            Q_EMIT projectChanged();
+            Q_EMIT mediaChanged();
+            Q_EMIT statusMessage(tr("Bleed suppression (%1) on %2: the quiet parts dropped by up to %3 dB, the music changed by "
+                                    "at most %4 dB. Ctrl+Z undoes it.")
+                                     .arg(tr(chosen->name), label)
+                                     .arg(-quietest, 0, 'f', 0)
+                                     .arg(worstMusic, 0, 'f', 1));
+            if (!losing.isEmpty())
+                Q_EMIT bleedLossWarning(losing, worstMusic);
+        });
+    Q_EMIT mixerChanged();
+}
+
+void ProjectController::revertProcessing(const daw::TrackId& id)
 {
     const daw::Track* track = model_.findTrack(id);
     if (track == nullptr)

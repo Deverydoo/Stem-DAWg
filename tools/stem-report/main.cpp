@@ -6,17 +6,25 @@
 // the advice rules.
 //
 //   stem-report <folder | file...> [--json] [--apply-fixes] [--denoise[=dB]]
+//               [--bleed[=light|medium|strong]] [--out=folder]
 //
 // --apply-fixes applies every clean-up fix the advice suggests; --denoise
 // learns each stem's noise profile, looks for hum, and switches on noise
-// reduction (default 12 dB) and hum removal where found. With either, the
-// stems are reported again, measured after their clean-up chains.
+// reduction (default 12 dB) and hum removal where found; --bleed renders
+// bleed-suppressed copies of every stem (default medium), into
+// <out>/Media/Processed when --out is given (to listen to), otherwise into a
+// temporary folder removed afterwards. With any of them, the stems are
+// reported again, measured after the processing.
 
 #include <daw/core/Files.h>
 #include <daw/media/AudioFileDecoder.h>
+#include <daw/session/BleedTools.h>
 #include <daw/session/NoiseTools.h>
 #include <daw/session/ProjectOperations.h>
 #include <daw/session/StemReport.h>
+#include <daw/session/VoiceTools.h>
+
+#include <chrono>
 
 #include <algorithm>
 #include <cstdio>
@@ -83,6 +91,8 @@ int main(int argc, char** argv)
     bool json = false;
     bool applyFixes = false;
     std::optional<double> denoiseDb;
+    const BleedStrength* bleed = nullptr;
+    std::optional<fs::path> out;
     std::vector<fs::path> files;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -98,6 +108,24 @@ int main(int argc, char** argv)
             denoiseDb = arg.size() > 10 ? std::atof(arg.c_str() + 10) : 12.0;
             continue;
         }
+        if (arg == "--bleed" || arg.rfind("--bleed=", 0) == 0) {
+            const std::string name = arg.size() > 8 ? arg.substr(8) : "medium";
+            for (const BleedStrength& s : kBleedStrengths) {
+                std::string lower = s.name;
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (lower == name)
+                    bleed = &s;
+            }
+            if (bleed == nullptr) {
+                std::fprintf(stderr, "--bleed takes light, medium or strong\n");
+                return 2;
+            }
+            continue;
+        }
+        if (arg.rfind("--out=", 0) == 0) {
+            out = utf8ToPath(arg.substr(6));
+            continue;
+        }
         const fs::path path = utf8ToPath(arg);
         std::error_code ec;
         if (fs::is_directory(path, ec)) {
@@ -109,7 +137,7 @@ int main(int argc, char** argv)
         }
     }
     if (files.empty()) {
-        std::fprintf(stderr, "usage: stem-report <folder | audio files...> [--json] [--apply-fixes] [--denoise[=dB]]\n");
+        std::fprintf(stderr, "usage: stem-report <folder | audio files...> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--out=folder]\n");
         return 2;
     }
     std::sort(files.begin(), files.end());
@@ -145,13 +173,46 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "analysis failed: %s\n", report.error().describe().c_str());
         return 1;
     }
-    if (applyFixes || denoiseDb) {
+    if (applyFixes || denoiseDb || bleed) {
         if (!json) {
             std::printf("Before clean-up:\n\n");
             print(*report);
             std::printf("\n");
         }
-        std::size_t changed = applyFixes ? applyCleanupFixes(model, *report, allCleanupFixes(*report)) : 0;
+        std::size_t changed = 0;
+        if (bleed) {
+            std::error_code ec;
+            const fs::path root = out ? *out : fs::temp_directory_path(ec) / ("stem-report-bleed-" + std::to_string(std::rand()));
+            const auto started = std::chrono::steady_clock::now();
+            auto result = suppressBleed(
+                root, model, [&](const MediaId& id) { auto m = pool.get(id); return m ? m->original : AudioAssetPtr{}; },
+                bleedTracks(model), *bleed, 0.0);
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            if (!result) {
+                std::fprintf(stderr, "bleed suppression failed: %s\n", result.error().describe().c_str());
+                return 1;
+            }
+            if (!json)
+                std::printf("Bleed suppression (%s) in %.1f s:\n", bleed->name, seconds);
+            for (BleedTrackOutcome& outcome : *result) {
+                const Track* track = model.findTrack(outcome.track);
+                if (!json)
+                    std::printf("  %-22.22s music %+.2f dB, quietest tenth %+.1f dB\n", track->name.c_str(), outcome.musicChangeDb,
+                                outcome.bleedChangeDb);
+                applyProcessedMedia(model, outcome.track, outcome.media);
+                for (LoadedMedia& loaded : outcome.loaded)
+                    pool.put(std::move(loaded));
+                ++changed;
+            }
+            if (!json && out)
+                std::printf("  copies written to %s\n", pathToUtf8(root / "Media" / "Processed").c_str());
+            if (!out)
+                fs::remove_all(root, ec);
+            if (!json)
+                std::printf("\n");
+        }
+        if (applyFixes)
+            changed += applyCleanupFixes(model, *report, allCleanupFixes(*report));
         if (denoiseDb) {
             for (Track& track : model.tracks) {
                 const auto hum = detectHum(model, pool, track.id);

@@ -356,6 +356,7 @@ void MainWindow::buildUi()
     tabifyDockWidget(stemDock, analysisDock);
     stemDock->raise();
     resizeDocks({stemDock}, {240}, Qt::Vertical);
+    resizeDocks({cleanupDock_}, {380}, Qt::Horizontal); // room for the clean-up buttons
 
     busyLabel_ = new QLabel(this);
     statusBar()->addPermanentWidget(busyLabel_);
@@ -414,6 +415,14 @@ void MainWindow::buildMenus()
         else
             statusBar()->showMessage(tr("Run the stem report first (Ctrl+R)"), 6000);
     })->setStatusTip(tr("Set up every clean-up the stem report suggests"));
+    cleanup->addAction(tr("Suppress &Bleed in All Stems"), this, [this] {
+        const auto tracks = daw::bleedTracks(project_->model());
+        if (tracks.size() < 2) {
+            statusBar()->showMessage(tr("Bleed suppression compares stems: import at least two tracks of recorded audio."), 6000);
+            return;
+        }
+        project_->suppressBleed(tracks, daw::kBleedStrengths[1]);
+    })->setStatusTip(tr("Turn each stem down where another stem owns the sound (medium strength; renders copies, Ctrl+Z undoes)"));
     cleanup->addSeparator();
     cleanup->addAction(bypassCleanup_);
     cleanup->addAction(listenRemoved_);
@@ -494,8 +503,25 @@ void MainWindow::connectSignals()
         }
         project_->voiceDenoise(daw::TrackId(id.toStdString()), reductionDb);
     });
-    connect(cleanupPanel_, &CleanupPanel::voiceRevertRequested, this,
-            [this](const QString& id) { project_->revertVoiceDenoise(daw::TrackId(id.toStdString())); });
+    connect(cleanupPanel_, &CleanupPanel::revertRequested, this,
+            [this](const QString& id) { project_->revertProcessing(daw::TrackId(id.toStdString())); });
+    connect(cleanupPanel_, &CleanupPanel::bleedRequested, this, [this](const QString& id, double reductionDb) {
+        const std::vector<daw::TrackId> tracks =
+            id.isEmpty() ? daw::bleedTracks(project_->model()) : std::vector<daw::TrackId>{daw::TrackId(id.toStdString())};
+        project_->suppressBleed(tracks, daw::bleedStrengthFor(reductionDb));
+    });
+    connect(project_.get(), &ProjectController::bleedLossWarning, this, [this](const QStringList& names, double worstDb) {
+        QStringList escaped;
+        for (const QString& name : names)
+            escaped << name.toHtmlEscaped();
+        QMessageBox::information(this, tr("Bleed suppression"),
+                                 tr("<p>Bleed suppression turned the louder parts of <b>%1</b> down by up to %2 dB.</p>"
+                                    "<p>Most of what these stems hold is also in other stems: often a duplicated kick, a "
+                                    "doubled part or separation residue. Listen: if something is missing, click "
+                                    "<b>Original</b> (or Ctrl+Z) or try a lighter strength.</p>")
+                                     .arg(escaped.join(QStringLiteral(", ")))
+                                     .arg(-worstDb, 0, 'f', 1));
+    });
     connect(project_.get(), &ProjectController::voiceLossWarning, this, [this](const QString& name, double voiceChangeDb) {
         QMessageBox::warning(this, tr("Voice denoise"),
                              tr("<p>The voice model also turned the loudest parts of <b>%1</b> down by %2 dB.</p>"
@@ -727,6 +753,7 @@ void MainWindow::refreshCleanupPanel()
     const daw::StemReport* report = project_->stemReport();
     std::vector<CleanupTrackInfo> tracks;
     tracks.reserve(model.tracks.size());
+    const std::vector<daw::TrackId> bleedTracks = daw::bleedTracks(model);
     for (std::size_t i = 0; i < model.tracks.size(); ++i) {
         const auto& track = model.tracks[i];
         CleanupTrackInfo info;
@@ -736,7 +763,11 @@ void MainWindow::refreshCleanupPanel()
         info.cleanup = track.cleanup;
         if (const auto voice = daw::trackVoiceDenoise(project_->model(), track.id))
             info.voiceDenoiseDb = voice->amountDb;
-        info.voiceDenoiseRunning = project_->isVoiceDenoiseRunning();
+        if (const auto bleed = daw::trackBleedSuppression(project_->model(), track.id))
+            info.bleedDb = bleed->amountDb;
+        info.bleedAvailable = bleedTracks.size() >= 2
+                              && std::find(bleedTracks.begin(), bleedTracks.end(), track.id) != bleedTracks.end();
+        info.renderRunning = project_->isRenderRunning();
         if (report != nullptr)
             for (const auto& measured : report->tracks)
                 if (measured.track == track.id) {

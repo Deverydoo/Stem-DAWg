@@ -3,14 +3,14 @@
 
 #include <daw/session/VoiceTools.h>
 
+#include "ProcessedMedia.h"
+
 #include <daw/core/Files.h>
 #include <daw/core/Sha256.h>
 #include <daw/media/TarGzArchive.h>
 #include <daw/media/Midi.h>
-#include <daw/media/PeakCache.h>
 #include <daw/media/Resampler.h>
-#include <daw/media/WavWriter.h>
-#include <daw/session/MediaLoader.h>
+#include <daw/project/ProjectStore.h>
 #include <daw/session/ProjectOperations.h>
 
 #include <algorithm>
@@ -20,47 +20,8 @@ namespace fs = std::filesystem;
 
 namespace daw {
 
-namespace {
-
-constexpr const char* kProcessedDir = "Media/Processed";
-
-/// Mean power of each 20 ms block, channels combined.
-std::vector<double> blockPowers(const AudioAsset& audio)
-{
-    const auto block = static_cast<std::int64_t>(std::max(1.0, std::round(audio.sampleRate * 0.02)));
-    std::vector<double> powers;
-    for (std::int64_t start = 0; start + block <= audio.numFrames(); start += block) {
-        double sum = 0.0;
-        for (const auto& channel : audio.channels)
-            for (std::int64_t i = start; i < start + block; ++i)
-                sum += static_cast<double>(channel[static_cast<std::size_t>(i)]) * channel[static_cast<std::size_t>(i)];
-        powers.push_back(sum / static_cast<double>(block * std::max(1, audio.numChannels())));
-    }
-    return powers;
-}
-
-/// Level change (dB) from `before` to `after` over the blocks in [low, high)
-/// of the original's sounding blocks, ranked by level.
-double levelChange(const std::vector<double>& before, const std::vector<double>& after, double low, double high)
-{
-    std::vector<std::size_t> order;
-    for (std::size_t i = 0; i < before.size() && i < after.size(); ++i)
-        if (before[i] > 1e-12) // not digital silence
-            order.push_back(i);
-    if (order.empty())
-        return 0.0;
-    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return before[a] < before[b]; });
-    const auto from = static_cast<std::size_t>(low * static_cast<double>(order.size()));
-    const auto to = std::max(from + 1, static_cast<std::size_t>(high * static_cast<double>(order.size())));
-    double b = 0.0, a = 0.0;
-    for (std::size_t k = from; k < to && k < order.size(); ++k) {
-        b += before[order[k]];
-        a += after[order[k]];
-    }
-    return b > 0.0 ? 10.0 * std::log10(std::max(a, 1e-30) / b) : 0.0;
-}
-
-} // namespace
+using detail::blockPowers;
+using detail::levelChange;
 
 Result<VoiceDenoiseOutcome> denoiseVoiceMedia(const fs::path& projectRoot, const MediaRef& original, const AudioAsset& audio,
                                               const VoiceDenoiser& denoiser, double reductionDb, double engineRate,
@@ -114,39 +75,12 @@ Result<VoiceDenoiseOutcome> denoiseVoiceMedia(const fs::path& projectRoot, const
     outcome.voiceChangeDb = levelChange(before, after, 0.5, 1.0);
     outcome.noiseChangeDb = levelChange(before, after, 0.0, 0.1);
 
-    // Write the copy into the project.
-    std::error_code ec;
-    const fs::path dir = projectRoot / utf8ToPath(kProcessedDir);
-    fs::create_directories(dir, ec);
-    if (ec)
-        return makeError(ErrorCode::IoError, "cannot create " + pathToUtf8(dir) + ": " + ec.message());
-    const std::string stem = (original.name.empty() ? std::string("Track") : original.name) + " (voice)";
-    std::string fileName = stem + ".wav";
-    for (int n = 2; fs::exists(dir / utf8ToPath(fileName), ec); ++n)
-        fileName = stem + " " + std::to_string(n) + ".wav";
-    if (auto status = writeWavFile(dir / utf8ToPath(fileName), *result, WavSampleFormat::Float32); !status)
-        return status.error();
-
-    MediaRef& ref = outcome.media;
-    ref.id = MediaId::generate();
-    ref.name = stem;
-    ref.path = std::string(kProcessedDir) + "/" + fileName;
-    ref.storage = MediaStorage::Copied;
-    ref.sampleRate = audio.sampleRate;
-    ref.numChannels = audio.numChannels();
-    ref.numFrames = audio.numFrames();
-    ref.derivation = MediaDerivation{original.id, kVoiceDenoiseProcess, reductionDb};
-    auto key = computeSourceKey(dir / utf8ToPath(fileName));
-    if (!key)
-        return key.error();
-    ref.sourceKey = *key;
-
-    MediaLoadOptions load;
-    load.engineSampleRate = engineRate;
-    auto loaded = loadMedia(projectRoot, ref, load, cancel);
-    if (!loaded)
-        return loaded.error();
-    outcome.loaded = std::move(*loaded);
+    auto copy = detail::writeProcessedCopy(projectRoot, original, *result, "voice", kVoiceDenoiseProcess, reductionDb, engineRate,
+                                           cancel);
+    if (!copy)
+        return copy.error();
+    outcome.media = std::move(copy->media);
+    outcome.loaded = std::move(copy->loaded);
     if (progress)
         progress(1.0);
     return outcome;
@@ -215,7 +149,7 @@ std::vector<MediaRef> trackOriginalMedia(const ProjectModel& model, const TrackI
     return out;
 }
 
-std::optional<MediaDerivation> trackVoiceDenoise(const ProjectModel& model, const TrackId& trackId)
+std::optional<MediaDerivation> trackProcessing(const ProjectModel& model, const TrackId& trackId)
 {
     const Track* track = model.findTrack(trackId);
     if (track == nullptr || track->clips.empty())
@@ -223,11 +157,19 @@ std::optional<MediaDerivation> trackVoiceDenoise(const ProjectModel& model, cons
     std::optional<MediaDerivation> found;
     for (const Clip& clip : track->clips) {
         const MediaRef* media = model.findMedia(clip.media);
-        if (media == nullptr || !media->derivation || media->derivation->process != kVoiceDenoiseProcess)
+        if (media == nullptr || !media->derivation || (found && media->derivation->process != found->process))
             return std::nullopt;
         found = media->derivation;
     }
     return found;
+}
+
+std::optional<MediaDerivation> trackVoiceDenoise(const ProjectModel& model, const TrackId& trackId)
+{
+    auto processing = trackProcessing(model, trackId);
+    if (processing && processing->process != kVoiceDenoiseProcess)
+        return std::nullopt;
+    return processing;
 }
 
 bool applyProcessedMedia(ProjectModel& model, const TrackId& trackId, const std::vector<MediaRef>& processed)
@@ -250,6 +192,28 @@ bool applyProcessedMedia(ProjectModel& model, const TrackId& trackId, const std:
         }
     }
     pruneUnusedMedia(model);
+    return changed;
+}
+
+std::size_t fallBackFromMissingProcessedMedia(ProjectModel& model, const fs::path& projectRoot)
+{
+    std::size_t changed = 0;
+    for (Track& track : model.tracks)
+        for (Clip& clip : track.clips) {
+            const MediaRef* media = model.findMedia(clip.media);
+            if (media == nullptr || !media->derivation)
+                continue;
+            std::error_code ec;
+            if (fs::is_regular_file(ProjectStore::resolveMediaPath(projectRoot, *media), ec))
+                continue;
+            const MediaRef* original = originalMediaOf(model, clip.media);
+            if (original != nullptr && original->id != clip.media) {
+                clip.media = original->id;
+                ++changed;
+            }
+        }
+    if (changed > 0)
+        pruneUnusedMedia(model);
     return changed;
 }
 

@@ -632,7 +632,8 @@ std::vector<StemAdvice> adviseStems(const StemReport& report)
         if (mid >= kBleedCorrelation)
             add(AdviceSeverity::Info, "bleed", pr.a, pr.b,
                 format("%s and %s overlap (correlation %.2f between %.0f Hz and %.0f kHz): parts of one leaked into the other "
-                       "during separation, or they play the same part. Solo each to hear it.",
+                       "during separation, or they play the same part. Solo each to hear it; bleed suppression (Clean-up panel) "
+                       "turns the leaked part down.",
                        name(pr.a), name(pr.b), mid, kLowEndHz, kHighBandHz / 1000.0));
     }
 

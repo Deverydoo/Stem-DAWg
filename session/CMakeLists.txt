@@ -12,6 +12,8 @@ daw_add_module(session
         src/UndoStack.cpp
         src/NoiseTools.cpp
         src/VoiceTools.cpp
+        src/ProcessedMedia.cpp
+        src/BleedTools.cpp
     PUBLIC_DEPS
         daw::core
         daw::media

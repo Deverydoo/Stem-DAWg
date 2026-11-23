@@ -136,6 +136,46 @@ void ProjectStore::discardAutosave(const fs::path& root)
     fs::remove(backupsDirectory(root) / kAutosaveName, ec);
 }
 
+Result<std::size_t> ProjectStore::removeUnusedProcessedMedia(const fs::path& root)
+{
+    const fs::path dir = root / "Media" / "Processed";
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec))
+        return std::size_t{0};
+    auto manifest = load(root);
+    if (!manifest)
+        return manifest.error();
+    // File names in use (copies are stored flat in Media/Processed), compared
+    // without case as Windows does.
+    auto lower = [](std::string text) {
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    };
+    std::vector<std::string> used;
+    auto collect = [&](const ProjectModel& model) {
+        for (const MediaRef& media : model.media)
+            used.push_back(lower(pathToUtf8(utf8ToPath(media.path).filename())));
+    };
+    collect(*manifest);
+    if (fs::is_regular_file(backupsDirectory(root) / kAutosaveName, ec))
+        if (auto autosave = loadAutosave(root))
+            collect(*autosave);
+    std::size_t removed = 0;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file(ec))
+            continue;
+        const std::string name = lower(pathToUtf8(entry.path().filename()));
+        if (std::find(used.begin(), used.end(), name) != used.end())
+            continue;
+        std::error_code removeError;
+        if (fs::remove(entry.path(), removeError))
+            ++removed;
+    }
+    if (removed > 0)
+        logging::info("project", "removed unused processed media", {{"files", static_cast<std::int64_t>(removed)}});
+    return removed;
+}
+
 Result<std::string> ProjectStore::stageMediaFile(const fs::path& root, const fs::path& source, MediaStorage storage)
 {
     std::error_code ec;

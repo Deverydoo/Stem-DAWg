@@ -37,7 +37,9 @@ struct CleanupTrackInfo {
     std::optional<double> noiseFloorDbfs; // from the stem report, if any
     bool floorAfterExpander = false;      // the floor was measured with the expander running
     std::optional<double> voiceDenoiseDb; // the track plays a voice-denoised copy at this reduction
-    bool voiceDenoiseRunning = false;     // a voice denoise is rendering (any track)
+    std::optional<double> bleedDb;        // the track plays a bleed-suppressed copy at this limit
+    bool bleedAvailable = false;          // it plays recorded audio and another such track exists
+    bool renderRunning = false;           // a voice denoise or bleed suppression is rendering
 };
 
 class CleanupPanel final : public QWidget {
@@ -61,7 +63,9 @@ Q_SIGNALS:
     void learnNoiseRequested(const QString& trackId);
     void detectHumRequested(const QString& trackId);
     void voiceDenoiseRequested(const QString& trackId, double reductionDb);
-    void voiceRevertRequested(const QString& trackId);
+    /// An empty id asks for every stem.
+    void bleedRequested(const QString& trackId, double reductionDb);
+    void revertRequested(const QString& trackId);
 
 private:
     const CleanupTrackInfo* current() const;
@@ -78,6 +82,12 @@ private:
     QSlider* hpSlider_ = nullptr;
     QDoubleSpinBox* hpFrequency_ = nullptr;
     QComboBox* hpSlope_ = nullptr;
+    QGroupBox* bleed_ = nullptr;
+    QLabel* bleedState_ = nullptr;
+    QComboBox* bleedStrength_ = nullptr;
+    QPushButton* bleedApply_ = nullptr;
+    QPushButton* bleedApplyAll_ = nullptr;
+    QPushButton* bleedRevert_ = nullptr;
     QGroupBox* voice_ = nullptr;
     QLabel* voiceState_ = nullptr;
     QComboBox* voiceReduction_ = nullptr;
