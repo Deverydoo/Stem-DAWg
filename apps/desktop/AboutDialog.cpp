@@ -36,7 +36,8 @@ AboutDialog::AboutDialog(const QString& aiStatus, QWidget* parent) : QDialog(par
            "warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</p>"
            "<p>Source code: <a href='%2'>%2</a></p>"
            "<p><b>Built with</b><br>"
-           "Qt %3 (LGPL-3.0) &middot; JUCE 8 (AGPL-3.0) &middot; ONNX Runtime (MIT) &middot; nlohmann/json (MIT)<br>"
+           "Qt %3 (LGPL-3.0) &middot; JUCE 8 (AGPL-3.0) &middot; ONNX Runtime (MIT) &middot; nlohmann/json (MIT) &middot; TinySoundFont (MIT) &middot; XZ Embedded (0BSD)<br>"
+           "Optional downloads: FluidR3_GM SoundFont (MIT) &middot; DeepFilterNet3 voice model (MIT or Apache-2.0)<br>"
            "See THIRD_PARTY_NOTICES.md in the source for details.</p>"
            "<p style='color:#9a9da5'>%4</p>")
             .arg(QStringLiteral(DAW_APP_VERSION), repo, QString::fromLatin1(qVersion()), aiStatus.toHtmlEscaped()));

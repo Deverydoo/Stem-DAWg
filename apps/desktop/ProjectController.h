@@ -12,8 +12,13 @@
 #include <daw/core/CancellationToken.h>
 #include <daw/project/ProjectModel.h>
 #include <daw/session/MediaPool.h>
+#include <daw/session/NoiseTools.h>
+#include <daw/session/VoiceTools.h>
 #include <daw/session/Renderer.h>
+#include <daw/session/StemReport.h>
+#include <daw/session/UndoStack.h>
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QStringList>
 #include <QThreadPool>
@@ -22,6 +27,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class EngineBridge;
@@ -51,14 +57,65 @@ public:
     /// ("2 Drums" before "10 FX") and tracks are added in that order even
     /// though the files decode in parallel.
     void importAudio(const QStringList& files);
+
+    /// SoundFont for MIDI tracks. Changing it re-renders the MIDI media.
+    void setSoundFont(const QString& path);
+    QString soundFont() const;
     void analyzeAll();
 
-    // Mixer. These update the model and the engine immediately (no undo yet).
+    // Stem report. Runs automatically once imported or opened stems are
+    // loaded; mixer changes mark it out of date until it is run again.
+    void runStemReport();
+    const daw::StemReport* stemReport() const noexcept { return stemReport_ ? &*stemReport_ : nullptr; }
+    bool isStemReportStale() const noexcept { return stemReportStale_; }
+    bool isStemReportRunning() const noexcept { return stemReportRunning_; }
+
+    // Undo/redo of every project edit below (and of imports).
+    bool canUndo() const noexcept { return undo_.canUndo(); }
+    bool canRedo() const noexcept { return undo_.canRedo(); }
+    QString undoText() const { return QString::fromStdString(undo_.undoLabel()); }
+    QString redoText() const { return QString::fromStdString(undo_.redoLabel()); }
+    void undo();
+    void redo();
+
+    // Tracks.
+    void renameTrack(const daw::TrackId& track, const QString& name);
+    void removeTrack(const daw::TrackId& track);
+
+    // Mixer. These update the model and the engine immediately.
     void setTrackGain(const daw::TrackId& track, double gainDb);
     void setTrackPan(const daw::TrackId& track, double pan);
     void setTrackMuted(const daw::TrackId& track, bool muted);
-    void setTrackSoloed(const daw::TrackId& track, bool soloed);
+    /// `exclusive` un-solos every other track (plain click); false adds to the solo set (Ctrl+click).
+    void setTrackSoloed(const daw::TrackId& track, bool soloed, bool exclusive = true);
     void setMasterGain(double gainDb);
+
+    // Clean-up chains (live, non-destructive).
+    void setTrackCleanup(const daw::TrackId& track, daw::TrackCleanup cleanup);
+    /// Applies stem report fixes (track indices refer to the current report).
+    void applyCleanupFixes(const std::vector<daw::CleanupFix>& fixes);
+    /// A/B listening: plays every track without its clean-up. Not saved; renders
+    /// and the stem report always include the clean-up.
+    void setCleanupBypassed(bool bypassed);
+    bool isCleanupBypassed() const noexcept { return cleanupBypassed_; }
+    /// Plays only what the clean-up chains remove (tracks without one are
+    /// silent). Not saved; turns the bypass off, and the bypass turns it off.
+    void setListenRemoved(bool on);
+    bool isListeningRemoved() const noexcept { return listenRemoved_; }
+    /// Learns the track's noise profile in the background, from its quietest
+    /// moments or from all of `region`, and switches its noise reduction on
+    /// (one undo step).
+    void learnNoiseProfile(const daw::TrackId& track, std::optional<daw::FrameRange> region = std::nullopt);
+    /// Looks for mains hum in the background (in `region` only, when given);
+    /// when found, switches the track's hum removal on at that frequency.
+    void detectHum(const daw::TrackId& track, std::optional<daw::FrameRange> region = std::nullopt);
+    /// Renders the track's original recording through the voice model in the
+    /// background and makes the track play the result (one undo step). The
+    /// model must be installed (daw::isVoiceModelInstalled).
+    void voiceDenoise(const daw::TrackId& track, double reductionDb);
+    /// The track plays its original recording again (one undo step).
+    void revertVoiceDenoise(const daw::TrackId& track);
+    bool isVoiceDenoiseRunning() const noexcept { return voiceJobs_ > 0; }
 
     // Export metadata.
     /// Profile assigned to new projects (does not touch the open project).
@@ -85,11 +142,21 @@ Q_SIGNALS:
     void exportProgress(double fraction);
     /// `warning`: written, but clipped or without the requested artwork.
     void exportFinished(bool ok, bool warning, const QString& message, const QString& path);
+    void stemReportProgress(double fraction);
+    /// A new report arrived, it went out of date, or it started/stopped running.
+    void stemReportChanged();
+    void stemReportFailed(const QString& message);
+    /// The undo or redo history changed (enable and label the menu items).
+    void undoChanged();
+    /// Voice denoise finished on a track and took away this much of its loudest
+    /// parts (dB, negative): the model may be treating the voice as noise.
+    void voiceLossWarning(const QString& trackName, double voiceChangeDb);
 
 private:
     void resetSession();
     void onEngineRateChanged(double rate);
     void loadAllMedia();
+    void loadMediaItems(const std::vector<daw::MediaRef>& items);
     void retargetAllMedia();
     void rebuildSnapshot();
     void setDirty(bool dirty);
@@ -98,16 +165,26 @@ private:
     void autosave();
     void handleAnalysis(const daw::JobOutcome& outcome);
     void reloadAnalysisMarkers();
+    void markStemReportStale();
+    void maybeRunStemReport();
+    bool allClipMediaLoaded() const;
+    /// Applies an undoable edit: `change` mutates the model and returns whether
+    /// it changed anything. Updates the engine and marks the report out of date.
+    template <typename Change>
+    bool applyEdit(const QString& label, const daw::UndoMerge& merge, Change change);
     template <typename Mutate>
-    void mutateTrack(const daw::TrackId& id, Mutate mutate);
+    void mutateTrack(const daw::TrackId& id, const QString& label, const daw::UndoMerge& merge, Mutate mutate);
+    void adoptRestoredModel(daw::ProjectModel model);
     struct ImportResult;
     struct PendingImport {
         std::uint64_t ticket = 0;
         QString file;
+        std::string trackName; // shortened for batches ("Song (Bass)" -> "Bass")
+        std::uint64_t batch = 0; // files imported together undo as one step
         std::shared_ptr<ImportResult> result; // null until the background work finishes
     };
     void flushImports();
-    void applyImport(const QString& file, ImportResult& result);
+    void applyImport(const PendingImport& import);
     template <typename Work, typename Done>
     void runInBackground(Work work, Done done);
 
@@ -122,14 +199,29 @@ private:
     std::vector<std::int64_t> markers_;
     std::deque<PendingImport> imports_; // submission order
     std::uint64_t nextImportTicket_ = 0;
+    std::uint64_t nextImportBatch_ = 0;
+    daw::UndoStack undo_;
+    QElapsedTimer undoClock_; // times merges of continuous edits
 
     std::string defaultProfileId_;
+    std::filesystem::path soundFont_;
     double engineRate_ = 0.0;
     std::int64_t pendingPlayhead_ = -1; // project frames, applied when the engine is ready
     std::uint64_t generation_ = 0;      // invalidates results from a previous project
     std::uint64_t snapshotVersion_ = 0;
+    std::shared_ptr<daw::VoiceDenoiser> voiceModel_; // loaded on first use
+    int voiceJobs_ = 0;
+    bool cleanupBypassed_ = false;
+    bool listenRemoved_ = false;
     int pendingJobs_ = 0;
     std::shared_ptr<daw::CancellationSource> cancel_;
+
+    std::optional<daw::StemReport> stemReport_;
+    bool stemReportStale_ = false;
+    bool stemReportRunning_ = false;
+    bool stemReportWanted_ = false; // run once everything is loaded
+    std::uint64_t stemReportRun_ = 0;
+    std::shared_ptr<daw::CancellationSource> stemCancel_;
 
     QTimer autosaveTimer_;
     QThreadPool workers_; // declared last so it is joined before other members die

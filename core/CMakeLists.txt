@@ -10,5 +10,6 @@ daw_add_module(core
         src/Files.cpp
         src/Logger.cpp
         src/AudioAsset.cpp
+        src/Sha256.cpp
     PUBLIC_DEPS
         nlohmann_json::nlohmann_json)

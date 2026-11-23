@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Chaos Rift Entertainment, LLC and the Stem DAWg contributors
 
-#include <daw/ai/Fft.h>
+#include <daw/dsp/Fft.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -10,7 +10,7 @@
 
 using namespace daw;
 
-TEST_CASE("FFT of an impulse is flat", "[ai][fft]")
+TEST_CASE("FFT of an impulse is flat", "[dsp][fft]")
 {
     const Fft fft(64);
     std::vector<float> input(64, 0.0f), power;
@@ -22,7 +22,7 @@ TEST_CASE("FFT of an impulse is flat", "[ai][fft]")
         REQUIRE(std::abs(p - 1.0f) < 1e-5f);
 }
 
-TEST_CASE("FFT places a bin-centred sine in its bin", "[ai][fft]")
+TEST_CASE("FFT places a bin-centred sine in its bin", "[dsp][fft]")
 {
     constexpr int n = 1024;
     const Fft fft(n);
@@ -36,7 +36,7 @@ TEST_CASE("FFT places a bin-centred sine in its bin", "[ai][fft]")
     REQUIRE(std::abs(power[37] - (n / 2.0f) * (n / 2.0f)) / power[37] < 1e-3f);
 }
 
-TEST_CASE("FFT rejects non power-of-two sizes", "[ai][fft]")
+TEST_CASE("FFT rejects non power-of-two sizes", "[dsp][fft]")
 {
     REQUIRE_THROWS(Fft(1000));
 }

@@ -49,6 +49,7 @@ struct AudioDeviceService::Impl final : juce::AudioIODeviceCallback {
         config.sampleRate = device->getCurrentSampleRate();
         config.maxBlockSize = device->getCurrentBufferSizeSamples();
         config.numOutputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
+        config.declick = true; // no clicks when the listener stops, seeks or starts
         engine.prepare(config);
         engine.beginProcessing();
     }

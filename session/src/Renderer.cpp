@@ -14,20 +14,15 @@
 
 namespace daw {
 
-Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, const RenderOptions& options,
-                              const CancellationToken& cancel)
+Result<std::unique_ptr<MediaPool>> prepareMediaAtRate(const ProjectModel& model, const MediaPool& pool, double rate,
+                                                      const CancellationToken& cancel)
 {
-    const auto started = std::chrono::steady_clock::now();
-    const double rate = model.sampleRate;
-    if (!(rate > 0.0))
-        return makeError(ErrorCode::InvalidArgument, "project has no sample rate");
-
-    // Media at the project rate: the original when it already matches,
-    // otherwise a fresh high-quality rendition. Only media used by clips.
-    MediaPool renderPool;
+    // The original when it already matches, otherwise a fresh high-quality
+    // rendition. Only media used by clips.
+    auto renderPool = std::make_unique<MediaPool>();
     for (const Track& track : model.tracks)
         for (const Clip& clip : track.clips) {
-            if (renderPool.contains(clip.media))
+            if (renderPool->contains(clip.media))
                 continue;
             auto loaded = pool.get(clip.media);
             if (!loaded || !loaded->original) {
@@ -44,8 +39,23 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
                     return retargeted.error();
                 loaded = std::move(*retargeted);
             }
-            renderPool.put(std::move(*loaded));
+            renderPool->put(std::move(*loaded));
         }
+    return renderPool;
+}
+
+Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, const RenderOptions& options,
+                              const CancellationToken& cancel)
+{
+    const auto started = std::chrono::steady_clock::now();
+    const double rate = model.sampleRate;
+    if (!(rate > 0.0))
+        return makeError(ErrorCode::InvalidArgument, "project has no sample rate");
+
+    auto prepared = prepareMediaAtRate(model, pool, rate, cancel);
+    if (!prepared)
+        return prepared.error();
+    const MediaPool& renderPool = **prepared;
 
     SnapshotBuildReport buildReport;
     auto snapshot = buildPlaybackSnapshot(model, renderPool, rate, 1, &buildReport);
@@ -58,11 +68,17 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
     auto out = AudioAsset::create(2, total, rate);
     const int block = std::max(64, options.blockSize);
     AudioEngine engine;
-    engine.prepare({rate, block, 2});
+    engine.prepare({.sampleRate = rate,
+                    .maxBlockSize = block,
+                    .numOutputChannels = 2,
+                    .meterLoudness = false,
+                    .maxCleanupTracks = static_cast<int>(model.tracks.size())});
     engine.publishSnapshot(std::move(snapshot));
     engine.seek(0);
     engine.play();
 
+    LoudnessMeter meter;
+    meter.prepare(rate, 2);
     RenderReport report;
     report.frames = total;
     report.sampleRate = rate;
@@ -74,6 +90,7 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
         const int n = static_cast<int>(std::min<std::int64_t>(block, total - done));
         float* outs[2] = {out->channels[0].data() + done, out->channels[1].data() + done};
         engine.process(outs, 2, n);
+        meter.process(outs, 2, n);
         for (float* channel : outs)
             for (int i = 0; i < n; ++i) {
                 const float a = std::abs(channel[i]);
@@ -88,6 +105,7 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
     }
     engine.collectGarbage();
 
+    report.loudness = meter.reading();
     report.peakDbfs = peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak)) : -144.0;
     report.renderSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     return RenderedMix{std::move(out), report};

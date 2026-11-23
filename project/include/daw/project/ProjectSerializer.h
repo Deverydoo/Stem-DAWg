@@ -25,6 +25,12 @@ std::string serializeProject(const ProjectModel& model);
 Result<ProjectModel> parseProject(std::string_view text,
                                   const MigrationRegistry& migrations = MigrationRegistry::builtin());
 
+/// A track's clean-up chain as stored in project.json (also used by reports).
+nlohmann::json cleanupToJson(const TrackCleanup& cleanup);
+/// Reads a clean-up object; missing or invalid values take their defaults and
+/// numbers are clamped to their ranges.
+TrackCleanup cleanupFromJson(const nlohmann::json& json);
+
 /// Structural validation: positive rates, unique ids, clips reference media,
 /// non-negative positions and lengths.
 Status validateProject(const ProjectModel& model);

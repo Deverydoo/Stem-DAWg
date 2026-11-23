@@ -8,8 +8,14 @@ daw_add_module(session
         src/ProjectOperations.cpp
         src/SnapshotBuilder.cpp
         src/Renderer.cpp
+        src/StemReport.cpp
+        src/UndoStack.cpp
+        src/NoiseTools.cpp
+        src/VoiceTools.cpp
     PUBLIC_DEPS
         daw::core
         daw::media
         daw::engine
-        daw::project)
+        daw::project
+        daw::dsp
+        daw::ai)

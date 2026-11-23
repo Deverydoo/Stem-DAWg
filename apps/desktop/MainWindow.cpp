@@ -4,15 +4,20 @@
 #include "MainWindow.h"
 
 #include "AboutDialog.h"
+#include "CleanupPanel.h"
 #include "DeviceDialog.h"
 #include "DiagnosticsPanel.h"
 #include "EngineBridge.h"
 #include "ExportDialog.h"
 #include "HelpText.h"
+#include "LoudnessDisplay.h"
 #include "ProfileDialog.h"
+#include "SoundFontDialog.h"
 #include "ProjectController.h"
+#include "StemReportPanel.h"
 #include "TrackPanel.h"
 #include "TrackStyle.h"
+#include "VoiceModelDialog.h"
 #include "WaveformView.h"
 
 #include <daw/ai/AnalysisService.h>
@@ -21,10 +26,14 @@
 #include <daw/core/Files.h>
 #include <daw/core/Logger.h>
 #include <daw/media/AudioFileDecoder.h>
+#include <daw/media/Midi.h>
+#include <daw/session/SnapshotBuilder.h>
 
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QDesktopServices>
 #include <QUrl>
 #include <QDir>
@@ -121,7 +130,8 @@ QString audioFileFilter()
     QStringList patterns;
     for (const auto& ext : daw::supportedAudioExtensions())
         patterns << QStringLiteral("*") + QString::fromStdString(ext);
-    return QObject::tr("Audio files (%1)").arg(patterns.join(' '));
+    patterns << QStringLiteral("*.mid") << QStringLiteral("*.midi");
+    return QObject::tr("Audio and MIDI files (%1)").arg(patterns.join(' '));
 }
 
 } // namespace
@@ -153,6 +163,12 @@ MainWindow::MainWindow()
     project_ = std::make_unique<ProjectController>(*engine_, *analysis_);
     project_->setDefaultProfileId(profiles_.activeProfileId);
     project_->setProfileId(profiles_.activeProfileId, false);
+    {
+        QString soundFont = QSettings().value(QStringLiteral("midi/soundFont")).toString();
+        if (soundFont.isEmpty() && QFileInfo::exists(SoundFontDialog::defaultInstallPath()))
+            soundFont = SoundFontDialog::defaultInstallPath();
+        project_->setSoundFont(soundFont);
+    }
     buildMenus();
     connectSignals();
     startAudio();
@@ -228,9 +244,30 @@ void MainWindow::buildUi()
     connect(fit, &QAction::triggered, waveform_, &WaveformView::zoomToFit);
 
     auto* analyze = transport->addAction(tr("Analyze"));
-    analyze->setToolTip(helpTip(tr("Analyze (Ctrl+Shift+A)"),
-                                tr("Measures every stem in the background: levels and clipping, hits (yellow markers), frequency balance.\n"
-                                   "Analysis never changes the audio. Results appear in the Analysis panel.")));
+    analyze->setToolTip(helpTip(tr("Analyze"),
+                                tr("Builds the stem report: loudness, noise beds, shared low end and bleed between stems, with advice.\n"
+                                   "Also measures each file in detail (Analysis Log tab) and marks drum hits in yellow.\n"
+                                   "Runs on its own after importing. Analysis never changes the audio.")));
+
+    bypassCleanup_ = new QAction(tr("Bypass Clean-up"), this);
+    bypassCleanup_->setCheckable(true);
+    bypassCleanup_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
+    bypassCleanup_->setToolTip(helpTip(tr("Bypass all clean-up (Ctrl+B)"),
+                                       tr("Plays every track without its clean-up chain, so you can compare with the original.\n"
+                                          "For listening only: exports and the stem report always include the clean-up.")));
+    connect(bypassCleanup_, &QAction::toggled, this, [this](bool on) { project_->setCleanupBypassed(on); });
+    transport->addAction(bypassCleanup_);
+
+    listenRemoved_ = new QAction(tr("Listen to Removed"), this);
+    listenRemoved_->setCheckable(true);
+    listenRemoved_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B));
+    listenRemoved_->setToolTip(helpTip(tr("Listen to removed (Ctrl+Shift+B)"),
+                                       tr("Plays only what the clean-up takes away: the noise, hum and bed that are removed.\n"
+                                          "If you hear music in it, the clean-up is too strong. Tracks without clean-up are silent.\n"
+                                          "For listening only: exports are not affected.")));
+    connect(listenRemoved_, &QAction::toggled, this, [this](bool on) { project_->setListenRemoved(on); });
+    if (auto* button = qobject_cast<QToolButton*>(transport->widgetForAction(bypassCleanup_)))
+        button->setStyleSheet(QStringLiteral("QToolButton:checked { background: #e0a030; color: #161616; border-radius: 3px; }"));
 
     transport->addSeparator();
     auto* artistLabel = new QLabel(tr(" Artist "), this);
@@ -277,26 +314,48 @@ void MainWindow::buildUi()
     transport->addWidget(masterLabel_);
     transport->addWidget(clipLight_);
     setClipIndicator(false);
+    transport->addSeparator();
+    loudness_ = new LoudnessDisplay(this);
+    transport->addWidget(loudness_);
+    connect(loudness_, &LoudnessDisplay::resetRequested, this, [this] { engine_->engine().resetLoudness(); });
     connect(clipLight_, &QToolButton::clicked, this, [this] { setClipIndicator(false); });
     connect(masterFader_, &VolumeFader::gainDbChanged, this, [this](double db) {
         masterLabel_->setText(VolumeFader::formatDb(db));
         project_->setMasterGain(db);
     });
-    connect(analyze, &QAction::triggered, this, [this] { project_->analyzeAll(); });
+    connect(analyze, &QAction::triggered, this, &MainWindow::analyzeEverything);
+
+    cleanupPanel_ = new CleanupPanel(this);
+    cleanupPanel_->setListenAction(listenRemoved_);
+    cleanupDock_ = new QDockWidget(tr("Clean-up"), this);
+    cleanupDock_->setObjectName(QStringLiteral("cleanup"));
+    cleanupDock_->setWidget(cleanupPanel_);
+    addDockWidget(Qt::RightDockWidgetArea, cleanupDock_);
 
     diagnostics_ = new DiagnosticsPanel(this);
     auto* diagDock = new QDockWidget(tr("Diagnostics"), this);
     diagDock->setObjectName(QStringLiteral("diagnostics"));
     diagDock->setWidget(diagnostics_);
     addDockWidget(Qt::RightDockWidgetArea, diagDock);
+    tabifyDockWidget(cleanupDock_, diagDock);
+    cleanupDock_->raise();
+
+    stemPanel_ = new StemReportPanel(this);
+    auto* stemDock = new QDockWidget(tr("Stem Report"), this);
+    stemDock->setObjectName(QStringLiteral("stemReport"));
+    stemDock->setWidget(stemPanel_);
+    addDockWidget(Qt::BottomDockWidgetArea, stemDock);
 
     analysisView_ = new QPlainTextEdit(this);
     analysisView_->setReadOnly(true);
     analysisView_->setFont(QFont(QStringLiteral("Consolas"), 9));
-    auto* analysisDock = new QDockWidget(tr("Analysis"), this);
+    auto* analysisDock = new QDockWidget(tr("Analysis Log"), this);
     analysisDock->setObjectName(QStringLiteral("analysis"));
     analysisDock->setWidget(analysisView_);
     addDockWidget(Qt::BottomDockWidgetArea, analysisDock);
+    tabifyDockWidget(stemDock, analysisDock);
+    stemDock->raise();
+    resizeDocks({stemDock}, {240}, Qt::Vertical);
 
     busyLabel_ = new QLabel(this);
     statusBar()->addPermanentWidget(busyLabel_);
@@ -310,14 +369,21 @@ void MainWindow::buildMenus()
     file->addAction(tr("&Save"), QKeySequence::Save, this, &MainWindow::saveProject);
     file->addAction(tr("Save &As..."), QKeySequence::SaveAs, this, &MainWindow::saveProjectAs);
     file->addSeparator();
-    file->addAction(tr("&Import Audio..."), QKeySequence(Qt::CTRL | Qt::Key_I), this, &MainWindow::importAudio)
-        ->setToolTip(tr("Add WAV, FLAC, AIFF, OGG or MP3 stems as new tracks. They are copied into the project."));
+    file->addAction(tr("&Import Audio or MIDI..."), QKeySequence(Qt::CTRL | Qt::Key_I), this, &MainWindow::importAudio)
+        ->setToolTip(tr("Add WAV, FLAC, AIFF, OGG or MP3 stems, or MIDI files, as new tracks. They are copied into the project.\n"
+                        "MIDI files play through a SoundFont (Settings > SoundFont for MIDI)."));
     file->addAction(tr("&Export Mix..."), QKeySequence(Qt::CTRL | Qt::Key_E), this, &MainWindow::exportMixDialog)
         ->setToolTip(tr("Render the whole song to a WAV file with your artist profile's metadata."));
     file->addSeparator();
     file->addAction(tr("E&xit"), QKeySequence::Quit, this, &QWidget::close);
 
     file->setToolTipsVisible(true);
+
+    auto* editMenu = menuBar()->addMenu(tr("&Edit"));
+    undoAction_ = editMenu->addAction(tr("&Undo"), QKeySequence::Undo, this, [this] { project_->undo(); });
+    redoAction_ = editMenu->addAction(tr("&Redo"), this, [this] { project_->redo(); });
+    redoAction_->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
+    refreshUndoActions();
 
     auto* audio = menuBar()->addMenu(tr("&Audio"));
     audio->addAction(tr("&Device Settings..."), this, &MainWindow::showDeviceDialog)
@@ -327,13 +393,30 @@ void MainWindow::buildMenus()
     auto* settings = menuBar()->addMenu(tr("&Settings"));
     settings->addAction(tr("Artist &Profiles..."), this, [this] { editProfiles(project_->model().profileId); })
         ->setToolTip(tr("Enter your artist details once; they are written into every export."));
+    settings->addAction(tr("&SoundFont for MIDI..."), this, [this] { showSoundFontDialog(); })
+        ->setToolTip(tr("Choose or download the instrument sounds MIDI tracks play with (FluidR3_GM, or any .sf2 file)."));
     settings->setToolTipsVisible(true);
 
     auto* analysis = menuBar()->addMenu(tr("A&nalysis"));
-    analysis->addAction(tr("&Analyze All Media"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A), this,
+    analysis->addAction(tr("&Stem Report"), QKeySequence(Qt::CTRL | Qt::Key_R), this, [this] { project_->runStemReport(); })
+        ->setToolTip(tr("Measure every stem and the mix (loudness, noise beds, shared low end, bleed) and give advice."));
+    analysis->addAction(tr("&Detailed File Analysis"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A), this,
                         [this] { project_->analyzeAll(); })
-        ->setToolTip(tr("Measure levels, hits and frequency balance of every stem. Does not change the audio."));
+        ->setToolTip(tr("Measure levels, hits and frequency balance of every file (Analysis Log tab). Does not change the audio."));
     analysis->setToolTipsVisible(true);
+
+    auto* cleanup = menuBar()->addMenu(tr("&Clean-up"));
+    cleanup->addAction(tr("Clean-up &Panel"), QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] { showCleanupPanel(); })
+        ->setStatusTip(tr("Edit the selected track's high-pass, expander and DC removal"));
+    cleanup->addAction(tr("Apply &All Stem Report Fixes"), this, [this] {
+        if (const daw::StemReport* report = project_->stemReport())
+            project_->applyCleanupFixes(daw::allCleanupFixes(*report));
+        else
+            statusBar()->showMessage(tr("Run the stem report first (Ctrl+R)"), 6000);
+    })->setStatusTip(tr("Set up every clean-up the stem report suggests"));
+    cleanup->addSeparator();
+    cleanup->addAction(bypassCleanup_);
+    cleanup->addAction(listenRemoved_);
 
     auto* view = menuBar()->addMenu(tr("&View"));
     view->addAction(tr("Zoom to &Fit"), QKeySequence(Qt::CTRL | Qt::Key_0), waveform_, &WaveformView::zoomToFit);
@@ -384,6 +467,58 @@ void MainWindow::connectSignals()
             QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,"), QDir::toNativeSeparators(path)});
     });
     connect(project_.get(), &ProjectController::mediaChanged, this, &MainWindow::refreshLanes);
+    connect(project_.get(), &ProjectController::stemReportChanged, this, &MainWindow::refreshStemReport);
+    connect(project_.get(), &ProjectController::stemReportProgress, stemPanel_, &StemReportPanel::setProgress);
+    connect(project_.get(), &ProjectController::stemReportFailed, this,
+            [this](const QString& message) { statusBar()->showMessage(tr("Stem report failed: %1").arg(message), 8000); });
+    connect(stemPanel_, &StemReportPanel::analyzeRequested, this, [this] { project_->runStemReport(); });
+    connect(stemPanel_, &StemReportPanel::applyFixesRequested, this,
+            [this](const std::vector<daw::CleanupFix>& fixes) { project_->applyCleanupFixes(fixes); });
+    connect(stemPanel_, &StemReportPanel::trackActivated, this, [this](int index) {
+        const daw::StemReport* report = project_->stemReport();
+        if (report != nullptr && index >= 0 && static_cast<std::size_t>(index) < report->tracks.size())
+            cleanupPanel_->selectTrack(QString::fromStdString(report->tracks[static_cast<std::size_t>(index)].track.str()));
+    });
+    connect(cleanupPanel_, &CleanupPanel::cleanupEdited, this, [this](const QString& id, const daw::TrackCleanup& cleanup) {
+        project_->setTrackCleanup(daw::TrackId(id.toStdString()), cleanup);
+    });
+    connect(cleanupPanel_, &CleanupPanel::learnNoiseRequested, this,
+            [this](const QString& id) { project_->learnNoiseProfile(daw::TrackId(id.toStdString()), timeSelection()); });
+    connect(cleanupPanel_, &CleanupPanel::detectHumRequested, this,
+            [this](const QString& id) { project_->detectHum(daw::TrackId(id.toStdString()), timeSelection()); });
+    connect(cleanupPanel_, &CleanupPanel::voiceDenoiseRequested, this, [this](const QString& id, double reductionDb) {
+        if (!daw::isVoiceModelInstalled()) {
+            VoiceModelDialog dialog(this);
+            if (dialog.exec() != QDialog::Accepted)
+                return;
+        }
+        project_->voiceDenoise(daw::TrackId(id.toStdString()), reductionDb);
+    });
+    connect(cleanupPanel_, &CleanupPanel::voiceRevertRequested, this,
+            [this](const QString& id) { project_->revertVoiceDenoise(daw::TrackId(id.toStdString())); });
+    connect(project_.get(), &ProjectController::voiceLossWarning, this, [this](const QString& name, double voiceChangeDb) {
+        QMessageBox::warning(this, tr("Voice denoise"),
+                             tr("<p>The voice model also turned the loudest parts of <b>%1</b> down by %2 dB.</p>"
+                                "<p>It is made for speech and can take a sung or heavily effected voice for noise. "
+                                "Listen to the track: if the voice suffers, click <b>Original</b> (or Ctrl+Z) and use "
+                                "<b>Noise reduction</b> instead, or try a gentler reduction.</p>")
+                                 .arg(name.toHtmlEscaped())
+                                 .arg(-voiceChangeDb, 0, 'f', 1));
+    });
+    connect(waveform_, &WaveformView::selectionChanged, this, [this](qint64 start, qint64 end) {
+        cleanupPanel_->setSelectionActive(end > start);
+        const double rate = project_->model().sampleRate;
+        if (end > start && rate > 0.0)
+            statusBar()->showMessage(tr("Selected %1 s from %2. Learn Noise and Detect now measure the selection; Esc clears it.")
+                                         .arg(static_cast<double>(end - start) / rate, 0, 'f', 2)
+                                         .arg(formatPosition(start, rate, project_->model().tempo.bpm, project_->model().tempo.numerator)),
+                                     6000);
+    });
+    connect(waveform_, &WaveformView::laneClicked, this, [this](int lane) {
+        const auto& tracks = project_->model().tracks;
+        if (lane >= 0 && static_cast<std::size_t>(lane) < tracks.size())
+            cleanupPanel_->selectTrack(QString::fromStdString(tracks[static_cast<std::size_t>(lane)].id.str()));
+    });
     connect(project_.get(), &ProjectController::mixerChanged, this, &MainWindow::refreshMixer);
 
     connect(waveform_, &WaveformView::laneLayoutChanged, this, [this](int laneHeight, int scrollY) {
@@ -406,8 +541,14 @@ void MainWindow::connectSignals()
             [this](const QString& id, double pan) { project_->setTrackPan(daw::TrackId(id.toStdString()), pan); });
     connect(trackPanel_, &TrackPanel::muteToggled, this,
             [this](const QString& id, bool on) { project_->setTrackMuted(daw::TrackId(id.toStdString()), on); });
-    connect(trackPanel_, &TrackPanel::soloToggled, this,
-            [this](const QString& id, bool on) { project_->setTrackSoloed(daw::TrackId(id.toStdString()), on); });
+    connect(trackPanel_, &TrackPanel::soloToggled, this, [this](const QString& id, bool on, bool additive) {
+        project_->setTrackSoloed(daw::TrackId(id.toStdString()), on, !additive);
+    });
+    connect(trackPanel_, &TrackPanel::cleanupRequested, this, [this](const QString& id) { showCleanupPanel(id); });
+    connect(trackPanel_, &TrackPanel::renameRequested, this, &MainWindow::renameTrackDialog);
+    connect(trackPanel_, &TrackPanel::deleteRequested, this,
+            [this](const QString& id) { project_->removeTrack(daw::TrackId(id.toStdString())); });
+    connect(project_.get(), &ProjectController::undoChanged, this, &MainWindow::refreshUndoActions);
     connect(project_.get(), &ProjectController::dirtyChanged, this, &MainWindow::updateTitle);
     connect(project_.get(), &ProjectController::statusMessage, this, [this](const QString& text) {
         statusBar()->showMessage(text, 6000);
@@ -494,11 +635,18 @@ void MainWindow::onTick()
     waveform_->setPlayhead(playhead);
     timeLabel_->setText(formatPosition(playhead, model.sampleRate, model.tempo.bpm, model.tempo.numerator));
 
+    loudness_->setReading(engine_->engine().loudness(), transport.playing);
+
     const auto peaks = engine_->engine().takeMeterPeaks();
     if (peaks.left >= 1.0f || peaks.right >= 1.0f)
         setClipIndicator(true);
     if (diagnostics_->isVisible())
         diagnostics_->updateEngine(engine_->engine().diagnostics(), engine_->devices().status(), peaks);
+    if (cleanupPanel_->isVisible()) {
+        const QString id = cleanupPanel_->currentTrackId();
+        cleanupPanel_->setGainReduction(
+            id.isEmpty() ? 0.0f : engine_->engine().takeCleanupReductionDb(daw::trackPlaybackKey(daw::TrackId(id.toStdString()))));
+    }
 }
 
 void MainWindow::refreshLanes()
@@ -550,6 +698,10 @@ void MainWindow::refreshMixer()
         state.muted = track.muted;
         state.soloed = track.soloed;
         state.audible = model.isAudible(track);
+        state.cleanup = !track.cleanup.hasStages()        ? TrackHeaderState::Cleanup::Off
+                        : track.cleanup.active() && !project_->isCleanupBypassed() ? TrackHeaderState::Cleanup::On
+                                                                                   : TrackHeaderState::Cleanup::Bypassed;
+        state.cleanupSummary = QString::fromStdString(daw::describeCleanup(track.cleanup));
         audible.push_back(state.audible);
         headers.push_back(std::move(state));
     }
@@ -558,6 +710,94 @@ void MainWindow::refreshMixer()
     if (masterFader_->gainDb() != model.masterGainDb && !masterFader_->isSliderDown())
         masterFader_->setGainDb(model.masterGainDb);
     masterLabel_->setText(VolumeFader::formatDb(model.masterGainDb));
+    if (bypassCleanup_->isChecked() != project_->isCleanupBypassed()) {
+        const QSignalBlocker block(bypassCleanup_);
+        bypassCleanup_->setChecked(project_->isCleanupBypassed());
+    }
+    if (listenRemoved_->isChecked() != project_->isListeningRemoved()) {
+        const QSignalBlocker block(listenRemoved_);
+        listenRemoved_->setChecked(project_->isListeningRemoved());
+    }
+    refreshCleanupPanel();
+}
+
+void MainWindow::refreshCleanupPanel()
+{
+    const auto& model = project_->model();
+    const daw::StemReport* report = project_->stemReport();
+    std::vector<CleanupTrackInfo> tracks;
+    tracks.reserve(model.tracks.size());
+    for (std::size_t i = 0; i < model.tracks.size(); ++i) {
+        const auto& track = model.tracks[i];
+        CleanupTrackInfo info;
+        info.id = QString::fromStdString(track.id.str());
+        info.name = QString::fromStdString(track.name);
+        info.color = trackColor(info.name, static_cast<int>(i));
+        info.cleanup = track.cleanup;
+        if (const auto voice = daw::trackVoiceDenoise(project_->model(), track.id))
+            info.voiceDenoiseDb = voice->amountDb;
+        info.voiceDenoiseRunning = project_->isVoiceDenoiseRunning();
+        if (report != nullptr)
+            for (const auto& measured : report->tracks)
+                if (measured.track == track.id) {
+                    info.noiseFloorDbfs = measured.noiseFloorDbfs;
+                    info.floorAfterExpander = measured.cleanup.active() && measured.cleanup.expander.enabled;
+                }
+        tracks.push_back(std::move(info));
+    }
+    cleanupPanel_->setTracks(tracks);
+}
+
+void MainWindow::refreshUndoActions()
+{
+    undoAction_->setEnabled(project_->canUndo());
+    undoAction_->setText(project_->canUndo() ? tr("&Undo %1").arg(project_->undoText()) : tr("&Undo"));
+    redoAction_->setEnabled(project_->canRedo());
+    redoAction_->setText(project_->canRedo() ? tr("&Redo %1").arg(project_->redoText()) : tr("&Redo"));
+}
+
+void MainWindow::renameTrackDialog(const QString& trackId)
+{
+    const daw::Track* track = project_->model().findTrack(daw::TrackId(trackId.toStdString()));
+    if (track == nullptr)
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Rename Track"), tr("Track name:"), QLineEdit::Normal,
+                                               QString::fromStdString(track->name), &ok);
+    if (ok)
+        project_->renameTrack(daw::TrackId(trackId.toStdString()), name);
+}
+
+std::optional<daw::FrameRange> MainWindow::timeSelection() const
+{
+    if (!waveform_->hasSelection())
+        return std::nullopt;
+    return daw::FrameRange{waveform_->selectionStart(), waveform_->selectionEnd()};
+}
+
+void MainWindow::showCleanupPanel(const QString& trackId)
+{
+    if (!trackId.isEmpty())
+        cleanupPanel_->selectTrack(trackId);
+    cleanupDock_->show();
+    cleanupDock_->raise();
+}
+
+void MainWindow::refreshStemReport()
+{
+    const daw::StemReport* report = project_->stemReport();
+    std::vector<QColor> colors;
+    if (report != nullptr)
+        for (std::size_t i = 0; i < report->tracks.size(); ++i)
+            colors.push_back(trackColor(QString::fromStdString(report->tracks[i].name), static_cast<int>(i)));
+    stemPanel_->setReport(report, colors, project_->isStemReportStale(), project_->isStemReportRunning());
+    refreshCleanupPanel();
+}
+
+void MainWindow::analyzeEverything()
+{
+    project_->runStemReport();
+    project_->analyzeAll();
 }
 
 void MainWindow::togglePlayPause()
@@ -659,13 +899,56 @@ bool MainWindow::saveProjectAs()
 void MainWindow::importAudio()
 {
     QSettings settings;
-    const QStringList files = QFileDialog::getOpenFileNames(this, tr("Import Audio"),
+    const QStringList files = QFileDialog::getOpenFileNames(this, tr("Import Audio or MIDI"),
                                                             settings.value(QStringLiteral("import/lastDir")).toString(),
                                                             audioFileFilter());
     if (files.isEmpty())
         return;
     settings.setValue(QStringLiteral("import/lastDir"), QFileInfo(files.front()).absolutePath());
-    project_->importAudio(files);
+    importFiles(files);
+}
+
+void MainWindow::importFiles(const QStringList& files)
+{
+    QStringList accepted;
+    int skippedMidi = 0;
+    bool askedForFont = false, haveFont = false;
+    for (const QString& file : files) {
+        if (daw::isMidiFile(daw::utf8ToPath(file.toStdString()))) {
+            if (!askedForFont) {
+                askedForFont = true;
+                haveFont = ensureSoundFont(tr("MIDI files need a SoundFont to make sound."));
+            }
+            if (!haveFont) {
+                ++skippedMidi;
+                continue;
+            }
+        }
+        accepted << file;
+    }
+    if (skippedMidi > 0)
+        statusBar()->showMessage(tr("%n MIDI file(s) skipped: no SoundFont is set up.", nullptr, skippedMidi), 8000);
+    if (!accepted.isEmpty())
+        project_->importAudio(accepted);
+}
+
+bool MainWindow::ensureSoundFont(const QString& reason)
+{
+    if (!project_->soundFont().isEmpty() && QFileInfo::exists(project_->soundFont()))
+        return true;
+    showSoundFontDialog(reason);
+    return !project_->soundFont().isEmpty() && QFileInfo::exists(project_->soundFont());
+}
+
+void MainWindow::showSoundFontDialog(const QString& reason)
+{
+    SoundFontDialog dialog(project_->soundFont(), reason, this);
+    dialog.exec();
+    const QString chosen = dialog.soundFontPath();
+    if (chosen == project_->soundFont())
+        return;
+    QSettings().setValue(QStringLiteral("midi/soundFont"), chosen);
+    project_->setSoundFont(chosen);
 }
 
 void MainWindow::showDeviceDialog()
@@ -809,7 +1092,7 @@ void MainWindow::openPaths(const QStringList& paths)
         }
     }
     if (!audioFiles.isEmpty())
-        project_->importAudio(audioFiles);
+        importFiles(audioFiles);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
@@ -834,5 +1117,5 @@ void MainWindow::dropEvent(QDropEvent* event)
         if (url.isLocalFile())
             files << url.toLocalFile();
     if (!files.isEmpty())
-        project_->importAudio(files);
+        importFiles(files);
 }

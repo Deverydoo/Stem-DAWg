@@ -8,12 +8,16 @@
 #include <daw/ai/Analyzers.h>
 #include <daw/core/Files.h>
 #include <daw/core/Logger.h>
+#include <daw/media/Midi.h>
 #include <daw/project/ProjectStore.h>
 #include <daw/session/MediaLoader.h>
+#include <daw/session/NoiseTools.h>
 #include <daw/session/ProjectOperations.h>
 #include <daw/session/SnapshotBuilder.h>
+#include <daw/session/UndoStack.h>
 
 #include <QCollator>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QMetaObject>
@@ -82,12 +86,15 @@ QString summarise(const daw::AnalysisResult& result, const QString& mediaName)
 struct ProjectController::ImportResult {
     daw::Result<daw::MediaRef> ref = daw::makeError(daw::ErrorCode::Unknown, "not run");
     daw::Result<daw::LoadedMedia> loaded = daw::makeError(daw::ErrorCode::Unknown, "not run");
+    std::optional<daw::MidiFileInfo> midi; // set for MIDI files
 };
 
 ProjectController::ProjectController(EngineBridge& engine, daw::AnalysisService& analysis, QObject* parent)
-    : QObject(parent), engine_(engine), analysis_(analysis), cancel_(std::make_shared<daw::CancellationSource>())
+    : QObject(parent), engine_(engine), analysis_(analysis), cancel_(std::make_shared<daw::CancellationSource>()),
+      stemCancel_(std::make_shared<daw::CancellationSource>())
 {
-    workers_.setMaxThreadCount(2);
+    workers_.setMaxThreadCount(3); // decoding and loading, plus the stem report
+    undoClock_.start();
     connect(&engine_, &EngineBridge::sampleRateChanged, this, &ProjectController::onEngineRateChanged);
     engineRate_ = engine_.sampleRate();
 
@@ -102,6 +109,7 @@ ProjectController::~ProjectController()
 {
     autosaveTimer_.stop();
     cancel_->cancel();
+    stemCancel_->cancel();
     analysis_.cancelAll();
     analysis_.waitIdle(std::chrono::seconds(10)); // callbacks target this object
     workers_.clear();
@@ -151,12 +159,21 @@ void ProjectController::resetSession()
 {
     cancel_->cancel();
     cancel_ = std::make_shared<daw::CancellationSource>();
+    stemCancel_->cancel();
+    stemCancel_ = std::make_shared<daw::CancellationSource>();
+    stemReport_.reset();
+    stemReportStale_ = false;
+    stemReportRunning_ = false;
+    stemReportWanted_ = false;
     ++generation_;
+    voiceJobs_ = 0; // their results are dropped with the old project
     analysis_.cancelAll();
     engine_.stop();
     pool_.clear();
     markers_.clear();
     imports_.clear();
+    undo_.clear();
+    Q_EMIT undoChanged();
     pendingPlayhead_ = -1;
     if (untitled_ && !root_.empty()) {
         std::error_code ec;
@@ -179,6 +196,7 @@ void ProjectController::newProject()
     Q_EMIT projectChanged();
     Q_EMIT markersChanged();
     Q_EMIT analysisText({});
+    Q_EMIT stemReportChanged();
 }
 
 bool ProjectController::hasRecoverableAutosave(const QString& directory)
@@ -205,8 +223,11 @@ bool ProjectController::openProject(const QString& directory, bool recoverAutosa
     rebuildSnapshot();
     Q_EMIT projectChanged();
     Q_EMIT analysisText({});
+    Q_EMIT stemReportChanged();
     reloadAnalysisMarkers();
+    stemReportWanted_ = true;
     loadAllMedia();
+    maybeRunStemReport(); // a project without media
     Q_EMIT statusMessage(tr("Opened %1").arg(directory));
     return true;
 }
@@ -273,20 +294,38 @@ void ProjectController::importAudio(const QStringList& files)
         return collator.compare(QFileInfo(a).fileName(), QFileInfo(b).fileName()) < 0;
     });
 
+    std::vector<std::string> stems;
+    for (const QString& file : ordered)
+        stems.push_back(QFileInfo(file).completeBaseName().toStdString());
+    const std::vector<std::string> names = daw::shortTrackNames(stems);
+
     const fs::path root = root_;
     const double rate = engineRate_;
+    const fs::path soundFont = soundFont_;
+    // MIDI renders at the project rate (the device rate for a new project).
+    const double midiRate = !model_.media.empty() ? model_.sampleRate : (engineRate_ > 0.0 ? engineRate_ : 48000.0);
     const auto token = cancel_->token();
-    for (const QString& file : ordered) {
+    const std::uint64_t batch = nextImportBatch_++;
+    for (qsizetype i = 0; i < ordered.size(); ++i) {
+        const QString& file = ordered[i];
         const std::uint64_t ticket = nextImportTicket_++;
-        imports_.push_back(PendingImport{ticket, file, nullptr});
+        std::string name = names[static_cast<std::size_t>(i)];
+        if (daw::isMidiFile(toPath(file)))
+            name += " (MIDI)";
+        imports_.push_back(PendingImport{ticket, file, name, batch, nullptr});
         const fs::path source = toPath(file);
         runInBackground(
-            [root, source, rate, token] {
+            [root, source, rate, midiRate, soundFont, token] {
                 auto out = std::make_shared<ImportResult>();
-                out->ref = daw::importAudioFile(root, source);
+                if (daw::isMidiFile(source)) {
+                    if (auto info = daw::probeMidiFile(source))
+                        out->midi = *info;
+                }
+                out->ref = daw::importAudioFile(root, source, daw::MediaStorage::Copied, midiRate);
                 if (out->ref) {
                     daw::MediaLoadOptions options;
                     options.engineSampleRate = rate;
+                    options.soundFont = soundFont;
                     out->loaded = daw::loadMedia(root, *out->ref, options, token);
                 }
                 return out;
@@ -308,21 +347,42 @@ void ProjectController::flushImports()
     while (!imports_.empty() && imports_.front().result) {
         PendingImport next = std::move(imports_.front());
         imports_.pop_front();
-        applyImport(next.file, *next.result);
+        applyImport(next);
     }
+    maybeRunStemReport();
 }
 
-void ProjectController::applyImport(const QString& file, ImportResult& result)
+void ProjectController::applyImport(const PendingImport& import)
 {
+    const QString& file = import.file;
+    ImportResult& result = *import.result;
     if (!result.ref || !result.loaded) {
         const auto& err = !result.ref ? result.ref.error() : result.loaded.error();
         Q_EMIT statusMessage(tr("Import failed for %1: %2").arg(file, QString::fromStdString(err.describe())));
         daw::logging::warn("project", "import failed", {{"file", file.toStdString()}, {"error", err.describe()}});
         return;
     }
-    daw::addMediaAsNewTrack(model_, *result.ref);
+    // The whole batch is one undo step, however long the files take to load.
+    undo_.record(model_, tr("Import").toStdString(), {"import:" + std::to_string(import.batch), daw::UndoMerge::kForever},
+                 undoClock_.elapsed() / 1000.0);
+    Q_EMIT undoChanged();
+    // The first MIDI file of a project sets its tempo (Suno's MIDI follows the
+    // song's tempo), so the bar.beat ruler lines up with the music.
+    const bool hadMidi = std::any_of(model_.media.begin(), model_.media.end(),
+                                     [&](const daw::MediaRef& m) { return daw::isMidiFile(daw::utf8ToPath(m.path)); });
+    if (result.midi && !hadMidi && model_.tempo.bpm == daw::makeEmptyProject("x").tempo.bpm && result.midi->averageBpm > 20.0)
+        model_.tempo.bpm = std::round(result.midi->averageBpm * 100.0) / 100.0;
+    const daw::TrackId trackId = daw::addMediaAsNewTrack(model_, *result.ref);
+    if (!import.trackName.empty()) {
+        daw::Track* track = model_.findTrack(trackId);
+        track->name = import.trackName;
+        for (daw::Clip& clip : track->clips)
+            clip.name = import.trackName;
+    }
     pool_.put(std::move(*result.loaded));
     setDirty(true);
+    markStemReportStale();
+    stemReportWanted_ = true;
     if (engineRate_ != 0.0 && pool_.get(result.ref->id)->renditionRate != engineRate_)
         retargetAllMedia(); // device changed while importing
     rebuildSnapshot();
@@ -331,65 +391,384 @@ void ProjectController::applyImport(const QString& file, ImportResult& result)
     Q_EMIT statusMessage(tr("Imported %1").arg(QFileInfo(file).fileName()));
 }
 
-template <typename Mutate>
-void ProjectController::mutateTrack(const daw::TrackId& id, Mutate mutate)
+template <typename Change>
+bool ProjectController::applyEdit(const QString& label, const daw::UndoMerge& merge, Change change)
 {
-    daw::Track* track = model_.findTrack(id);
-    if (track == nullptr || !mutate(*track))
-        return;
+    daw::ProjectModel before = model_;
+    if (!change(model_))
+        return false;
+    undo_.record(before, label.toStdString(), merge, undoClock_.elapsed() / 1000.0);
     setDirty(true);
     rebuildSnapshot();
+    markStemReportStale();
+    Q_EMIT undoChanged();
+    return true;
+}
+
+template <typename Mutate>
+void ProjectController::mutateTrack(const daw::TrackId& id, const QString& label, const daw::UndoMerge& merge, Mutate mutate)
+{
+    const bool changed = applyEdit(label, merge, [&](daw::ProjectModel& model) {
+        daw::Track* track = model.findTrack(id);
+        return track != nullptr && mutate(*track);
+    });
+    if (changed)
+        Q_EMIT mixerChanged();
+}
+
+void ProjectController::undo()
+{
+    if (auto restored = undo_.undo(model_)) {
+        const QString label = redoText();
+        adoptRestoredModel(std::move(*restored));
+        Q_EMIT statusMessage(tr("Undid %1").arg(label));
+    }
+}
+
+void ProjectController::redo()
+{
+    if (auto restored = undo_.redo(model_)) {
+        const QString label = undoText();
+        adoptRestoredModel(std::move(*restored));
+        Q_EMIT statusMessage(tr("Redid %1").arg(label));
+    }
+}
+
+void ProjectController::adoptRestoredModel(daw::ProjectModel model)
+{
+    model_ = std::move(model);
+    setDirty(true);
+    rebuildSnapshot();
+    markStemReportStale();
+    reloadAnalysisMarkers();
+    Q_EMIT undoChanged();
+    Q_EMIT projectChanged();
+    Q_EMIT mediaChanged();
     Q_EMIT mixerChanged();
+}
+
+void ProjectController::renameTrack(const daw::TrackId& id, const QString& name)
+{
+    if (applyEdit(tr("Rename Track"), {}, [&](daw::ProjectModel& model) { return daw::renameTrack(model, id, name.toStdString()); }))
+        Q_EMIT projectChanged();
+}
+
+void ProjectController::removeTrack(const daw::TrackId& id)
+{
+    const daw::Track* track = model_.findTrack(id);
+    if (track == nullptr)
+        return;
+    const QString name = QString::fromStdString(track->name);
+    if (applyEdit(tr("Delete Track"), {}, [&](daw::ProjectModel& model) { return daw::removeTrack(model, id); })) {
+        reloadAnalysisMarkers();
+        Q_EMIT projectChanged();
+        Q_EMIT mediaChanged();
+        Q_EMIT statusMessage(tr("Deleted %1. Ctrl+Z brings it back.").arg(name));
+    }
 }
 
 void ProjectController::setTrackGain(const daw::TrackId& id, double gainDb)
 {
     gainDb = std::clamp(gainDb, daw::kSilenceDb, 12.0);
-    mutateTrack(id, [gainDb](daw::Track& t) { return std::exchange(t.gainDb, gainDb) != gainDb; });
+    mutateTrack(id, tr("Volume"), {"gain:" + id.str()},
+                [gainDb](daw::Track& t) { return std::exchange(t.gainDb, gainDb) != gainDb; });
 }
 
 void ProjectController::setTrackPan(const daw::TrackId& id, double pan)
 {
     pan = std::clamp(pan, -1.0, 1.0);
-    mutateTrack(id, [pan](daw::Track& t) { return std::exchange(t.pan, pan) != pan; });
+    mutateTrack(id, tr("Pan"), {"pan:" + id.str()}, [pan](daw::Track& t) { return std::exchange(t.pan, pan) != pan; });
 }
 
 void ProjectController::setTrackMuted(const daw::TrackId& id, bool muted)
 {
-    mutateTrack(id, [muted](daw::Track& t) { return std::exchange(t.muted, muted) != muted; });
+    mutateTrack(id, muted ? tr("Mute") : tr("Unmute"), {},
+                [muted](daw::Track& t) { return std::exchange(t.muted, muted) != muted; });
 }
 
-void ProjectController::setTrackSoloed(const daw::TrackId& id, bool soloed)
+void ProjectController::setTrackSoloed(const daw::TrackId& id, bool soloed, bool exclusive)
 {
-    mutateTrack(id, [soloed](daw::Track& t) { return std::exchange(t.soloed, soloed) != soloed; });
+    if (applyEdit(soloed ? tr("Solo") : tr("Unsolo"), {},
+                  [&](daw::ProjectModel& model) { return daw::setTrackSolo(model, id, soloed, exclusive); }))
+        Q_EMIT mixerChanged(); // also refreshes the other headers' solo buttons
 }
 
 void ProjectController::setMasterGain(double gainDb)
 {
     gainDb = std::clamp(gainDb, daw::kSilenceDb, 12.0);
-    if (model_.masterGainDb == gainDb)
+    if (applyEdit(tr("Master Volume"), {"master"},
+                  [gainDb](daw::ProjectModel& model) { return std::exchange(model.masterGainDb, gainDb) != gainDb; }))
+        Q_EMIT mixerChanged();
+}
+
+void ProjectController::setTrackCleanup(const daw::TrackId& id, daw::TrackCleanup cleanup)
+{
+    cleanup.clamp();
+    mutateTrack(id, tr("Clean-up"), {"cleanup:" + id.str()},
+                [&cleanup](daw::Track& t) { return std::exchange(t.cleanup, cleanup) != cleanup; });
+}
+
+void ProjectController::applyCleanupFixes(const std::vector<daw::CleanupFix>& fixes)
+{
+    if (!stemReport_ || fixes.empty())
         return;
-    model_.masterGainDb = gainDb;
-    setDirty(true);
+    std::size_t changed = 0;
+    applyEdit(tr("Apply Clean-up Fixes"), {}, [&](daw::ProjectModel& model) {
+        changed = daw::applyCleanupFixes(model, *stemReport_, fixes);
+        return changed > 0;
+    });
+    if (changed == 0) {
+        Q_EMIT statusMessage(tr("Those clean-up settings are already in place"));
+        return;
+    }
+    Q_EMIT mixerChanged();
+    Q_EMIT statusMessage(tr("Clean-up set on %n track(s). Analyze again to measure the result.", nullptr, static_cast<int>(changed)));
+}
+
+void ProjectController::setCleanupBypassed(bool bypassed)
+{
+    if (cleanupBypassed_ == bypassed)
+        return;
+    cleanupBypassed_ = bypassed;
+    if (bypassed)
+        listenRemoved_ = false;
     rebuildSnapshot();
     Q_EMIT mixerChanged();
+}
+
+void ProjectController::setListenRemoved(bool on)
+{
+    if (listenRemoved_ == on)
+        return;
+    listenRemoved_ = on;
+    if (on)
+        cleanupBypassed_ = false;
+    rebuildSnapshot();
+    Q_EMIT mixerChanged();
+}
+
+void ProjectController::learnNoiseProfile(const daw::TrackId& id, std::optional<daw::FrameRange> region)
+{
+    const daw::Track* track = model_.findTrack(id);
+    if (track == nullptr)
+        return;
+    const QString name = QString::fromStdString(track->name);
+    Q_EMIT statusMessage(region ? tr("Learning the noise of %1 from the selection...").arg(name)
+                                : tr("Learning the noise of %1...").arg(name));
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    daw::NoiseLearnOptions options;
+    options.region = region;
+    runInBackground([this, model, id, options, token] { return daw::learnNoiseProfile(model, pool_, id, options, token); },
+                    [this, id, name, region](daw::Result<daw::NoiseProfile>& profile) {
+                        if (!profile) {
+                            if (profile.error().code != daw::ErrorCode::Cancelled)
+                                Q_EMIT statusMessage(tr("Could not learn the noise of %1: %2")
+                                                         .arg(name, QString::fromStdString(profile.error().message)));
+                            return;
+                        }
+                        const double seconds = profile->seconds;
+                        const bool changed = applyEdit(tr("Learn Noise Profile"), {}, [&](daw::ProjectModel& m) {
+                            daw::Track* t = m.findTrack(id);
+                            if (t == nullptr)
+                                return false;
+                            t->cleanup.bypassed = false;
+                            t->cleanup.denoise.enabled = true;
+                            t->cleanup.denoise.profile = std::move(*profile);
+                            return true;
+                        });
+                        if (!changed)
+                            return;
+                        Q_EMIT mixerChanged();
+                        Q_EMIT statusMessage((region ? tr("Learned the noise of %1 from %2 s of the selection. Noise reduction is on.")
+                                                     : tr("Learned the noise of %1 from %2 s of its quietest audio. Noise reduction is on."))
+                                                 .arg(name)
+                                                 .arg(seconds, 0, 'f', 1));
+                    });
+}
+
+void ProjectController::detectHum(const daw::TrackId& id, std::optional<daw::FrameRange> region)
+{
+    const daw::Track* track = model_.findTrack(id);
+    if (track == nullptr)
+        return;
+    const QString name = QString::fromStdString(track->name);
+    Q_EMIT statusMessage(tr("Looking for hum in %1...").arg(name));
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    runInBackground([this, model, id, region, token] { return daw::detectHum(model, pool_, id, token, region); },
+                    [this, id, name, region](daw::Result<std::optional<daw::HumDetection>>& found) {
+                        if (!found) {
+                            if (found.error().code != daw::ErrorCode::Cancelled)
+                                Q_EMIT statusMessage(tr("Could not check %1 for hum: %2")
+                                                         .arg(name, QString::fromStdString(found.error().message)));
+                            return;
+                        }
+                        if (!found->has_value()) {
+                            Q_EMIT statusMessage(region ? tr("No mains hum found in the selection of %1.").arg(name)
+                                                        : tr("No mains hum found in %1.").arg(name));
+                            return;
+                        }
+                        const daw::HumDetection hum = **found;
+                        applyEdit(tr("Detect Hum"), {}, [&](daw::ProjectModel& m) {
+                            daw::Track* t = m.findTrack(id);
+                            if (t == nullptr)
+                                return false;
+                            t->cleanup.bypassed = false;
+                            t->cleanup.hum = {true, hum.frequencyHz, hum.harmonics};
+                            return true;
+                        });
+                        Q_EMIT mixerChanged();
+                        Q_EMIT statusMessage(tr("Found %1 Hz hum in %2 (%3 harmonics, %4 dB above the noise). Hum removal is on.")
+                                                 .arg(hum.frequencyHz, 0, 'f', 0)
+                                                 .arg(name)
+                                                 .arg(hum.harmonics)
+                                                 .arg(hum.prominenceDb, 0, 'f', 0));
+                    });
+}
+
+void ProjectController::voiceDenoise(const daw::TrackId& id, double reductionDb)
+{
+    const daw::Track* track = model_.findTrack(id);
+    if (track == nullptr)
+        return;
+    const QString name = QString::fromStdString(track->name);
+    struct Input {
+        daw::MediaRef media;
+        daw::AudioAssetPtr audio;
+    };
+    std::vector<Input> inputs;
+    for (const daw::MediaRef& media : daw::trackOriginalMedia(model_, id)) {
+        const auto loaded = pool_.get(media.id);
+        if (!loaded || !loaded->original) {
+            Q_EMIT statusMessage(tr("%1 is still loading; try again in a moment.").arg(name));
+            return;
+        }
+        inputs.push_back({media, loaded->original});
+    }
+    if (inputs.empty())
+        return;
+
+    struct Output {
+        std::shared_ptr<daw::VoiceDenoiser> model;
+        std::vector<daw::VoiceDenoiseOutcome> outcomes;
+        std::optional<daw::Error> error;
+    };
+    Q_EMIT statusMessage(tr("Voice denoise: %1...").arg(name));
+    ++voiceJobs_;
+    const std::filesystem::path root = root_;
+    const double rate = engineRate_;
+    const auto token = cancel_->token();
+    QPointer<ProjectController> self(this);
+    runInBackground(
+        [self, model = voiceModel_, inputs, root, rate, reductionDb, token, name]() mutable {
+            Output out;
+            if (!model) {
+                auto backend = daw::createOnnxBackend({.intraOpThreads = 4});
+                auto loaded = backend ? daw::VoiceDenoiser::load(*backend, daw::voiceModelDirectory())
+                                      : daw::Result<std::shared_ptr<daw::VoiceDenoiser>>(backend.error());
+                if (!loaded) {
+                    out.error = loaded.error();
+                    return out;
+                }
+                model = *loaded;
+            }
+            out.model = model;
+            int lastPercent = -1;
+            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                auto outcome = daw::denoiseVoiceMedia(root, inputs[i].media, *inputs[i].audio, *model, reductionDb, rate, token,
+                                                      [&](double p) {
+                                                          const int percent = static_cast<int>(100.0 * (i + p) / inputs.size());
+                                                          if (percent / 10 == lastPercent / 10)
+                                                              return;
+                                                          lastPercent = percent;
+                                                          QMetaObject::invokeMethod(qApp, [self, name, percent] {
+                                                              if (self)
+                                                                  Q_EMIT self->statusMessage(tr("Voice denoise: %1 %2%").arg(name).arg(percent));
+                                                          });
+                                                      });
+                if (!outcome) {
+                    out.error = outcome.error();
+                    return out;
+                }
+                out.outcomes.push_back(std::move(*outcome));
+            }
+            return out;
+        },
+        [this, id, name, reductionDb](Output& out) {
+            --voiceJobs_;
+            if (out.model)
+                voiceModel_ = out.model;
+            if (out.error) {
+                if (out.error->code != daw::ErrorCode::Cancelled)
+                    Q_EMIT statusMessage(tr("Voice denoise failed for %1: %2").arg(name, QString::fromStdString(out.error->message)));
+                Q_EMIT mixerChanged();
+                return;
+            }
+            std::vector<daw::MediaRef> copies;
+            double voiceChange = 0.0, noiseChange = 0.0;
+            for (daw::VoiceDenoiseOutcome& outcome : out.outcomes) {
+                copies.push_back(outcome.media);
+                voiceChange = std::min(voiceChange, outcome.voiceChangeDb);
+                noiseChange = std::min(noiseChange, outcome.noiseChangeDb);
+                pool_.put(std::move(outcome.loaded));
+            }
+            const bool changed = applyEdit(tr("Voice Denoise"), {}, [&](daw::ProjectModel& m) { return daw::applyProcessedMedia(m, id, copies); });
+            if (engineRate_ != 0.0)
+                retargetAllMedia(); // the device may have changed while it ran
+            Q_EMIT mixerChanged();
+            if (!changed)
+                return;
+            Q_EMIT projectChanged();
+            Q_EMIT mediaChanged();
+            Q_EMIT statusMessage(tr("Voice denoise on %1: the noise dropped by %2 dB, the voice changed by %3 dB. Ctrl+Z undoes it.")
+                                     .arg(name)
+                                     .arg(-noiseChange, 0, 'f', 0)
+                                     .arg(voiceChange, 0, 'f', 1));
+            if (voiceChange < daw::kVoiceLossWarningDb)
+                Q_EMIT voiceLossWarning(name, voiceChange);
+        });
+    Q_EMIT mixerChanged();
+}
+
+void ProjectController::revertVoiceDenoise(const daw::TrackId& id)
+{
+    const daw::Track* track = model_.findTrack(id);
+    if (track == nullptr)
+        return;
+    const QString name = QString::fromStdString(track->name);
+    if (applyEdit(tr("Original Recording"), {}, [&](daw::ProjectModel& m) { return daw::revertTrackProcessing(m, id); })) {
+        Q_EMIT projectChanged();
+        Q_EMIT mediaChanged();
+        Q_EMIT mixerChanged();
+        Q_EMIT statusMessage(tr("%1 plays its original recording again.").arg(name));
+    }
 }
 
 void ProjectController::setProfileId(const std::string& id, bool markDirty)
 {
     if (model_.profileId == id)
         return;
+    if (!markDirty) { // assigning the default profile to a new project is not an edit
+        model_.profileId = id;
+        return;
+    }
+    const daw::ProjectModel before = model_;
     model_.profileId = id;
-    if (markDirty)
-        setDirty(true);
+    undo_.record(before, tr("Artist Profile").toStdString(), {}, undoClock_.elapsed() / 1000.0);
+    setDirty(true);
+    Q_EMIT undoChanged();
 }
 
 void ProjectController::setReleaseMetadata(const daw::MetadataFields& fields)
 {
     if (model_.release == fields)
         return;
+    const daw::ProjectModel before = model_;
     model_.release = fields;
+    undo_.record(before, tr("Song Details").toStdString(), {}, undoClock_.elapsed() / 1000.0);
     setDirty(true);
+    Q_EMIT undoChanged();
 }
 
 void ProjectController::exportMix(daw::ExportRequest request)
@@ -418,6 +797,12 @@ void ProjectController::exportMix(daw::ExportRequest request)
                                   .arg(static_cast<double>(r.bytes) / (1024.0 * 1024.0), 0, 'f', 1)
                                   .arg(static_cast<double>(r.render.frames) / r.render.sampleRate, 0, 'f', 1)
                                   .arg(r.render.peakDbfs, 0, 'f', 1);
+            const auto& loudness = r.render.loudness;
+            if (loudness.integratedLufs > -70.0)
+                message += QStringLiteral("\n") + tr("Loudness %1 LUFS integrated, range %2 LU, true peak %3 dBTP.")
+                                                   .arg(loudness.integratedLufs, 0, 'f', 1)
+                                                   .arg(loudness.loudnessRangeLu, 0, 'f', 1)
+                                                   .arg(loudness.truePeakDbtp, 0, 'f', 1);
             if (r.render.clippedSamples > 0)
                 message += QStringLiteral("\n\n")
                            + tr("Warning: %1 samples went over 0 dBFS and clipped. Lower the Master fader by at least %2 dB "
@@ -430,6 +815,8 @@ void ProjectController::exportMix(daw::ExportRequest request)
                                {{"file", file.toStdString()},
                                 {"bytes", r.bytes},
                                 {"peakDbfs", r.render.peakDbfs},
+                                {"lufs", r.render.loudness.integratedLufs},
+                                {"truePeakDbtp", r.render.loudness.truePeakDbtp},
                                 {"clipped", r.render.clippedSamples},
                                 {"renderSeconds", r.render.renderSeconds}});
             Q_EMIT exportFinished(true, r.render.clippedSamples > 0 || !r.artworkWarning.empty(), message, file);
@@ -438,14 +825,43 @@ void ProjectController::exportMix(daw::ExportRequest request)
 
 void ProjectController::loadAllMedia()
 {
+    loadMediaItems(model_.media);
+}
+
+void ProjectController::setSoundFont(const QString& path)
+{
+    const fs::path next = toPath(path);
+    if (next == soundFont_)
+        return;
+    soundFont_ = next;
+    std::vector<daw::MediaRef> midi;
+    for (const daw::MediaRef& media : model_.media)
+        if (daw::isMidiFile(daw::utf8ToPath(media.path)))
+            midi.push_back(media);
+    if (!midi.empty()) {
+        Q_EMIT statusMessage(tr("Rendering %n MIDI track(s) with the new SoundFont...", nullptr, static_cast<int>(midi.size())));
+        markStemReportStale();
+        loadMediaItems(midi);
+    }
+}
+
+QString ProjectController::soundFont() const
+{
+    return toQString(soundFont_);
+}
+
+void ProjectController::loadMediaItems(const std::vector<daw::MediaRef>& items)
+{
     const fs::path root = root_;
     const double rate = engineRate_;
+    const fs::path soundFont = soundFont_;
     const auto token = cancel_->token();
-    for (const daw::MediaRef& media : model_.media) {
+    for (const daw::MediaRef& media : items) {
         runInBackground(
-            [root, media, rate, token] {
+            [root, media, rate, soundFont, token] {
                 daw::MediaLoadOptions options;
                 options.engineSampleRate = rate;
+                options.soundFont = soundFont;
                 return daw::loadMedia(root, media, options, token);
             },
             [this, name = media.name](daw::Result<daw::LoadedMedia>& result) {
@@ -460,6 +876,7 @@ void ProjectController::loadAllMedia()
                     retargetAllMedia();
                 rebuildSnapshot();
                 Q_EMIT mediaChanged();
+                maybeRunStemReport();
             });
     }
 }
@@ -502,7 +919,8 @@ void ProjectController::rebuildSnapshot()
     if (engineRate_ <= 0.0)
         return;
     daw::SnapshotBuildReport report;
-    engine_.engine().publishSnapshot(daw::buildPlaybackSnapshot(model_, pool_, engineRate_, ++snapshotVersion_, &report));
+    engine_.engine().publishSnapshot(daw::buildPlaybackSnapshot(model_, pool_, engineRate_, ++snapshotVersion_, &report,
+                                                                {.bypassCleanup = cleanupBypassed_, .listenRemoved = listenRemoved_}));
     if (pendingPlayhead_ >= 0) {
         engine_.seek(daw::TimeMapper{model_.sampleRate, engineRate_}.toEngine(pendingPlayhead_));
         pendingPlayhead_ = -1;
@@ -655,4 +1073,93 @@ void ProjectController::reloadAnalysisMarkers()
     }
     std::sort(markers_.begin(), markers_.end());
     Q_EMIT markersChanged();
+}
+
+bool ProjectController::allClipMediaLoaded() const
+{
+    for (const daw::Track& track : model_.tracks)
+        for (const daw::Clip& clip : track.clips)
+            if (!pool_.contains(clip.media))
+                return false;
+    return true;
+}
+
+void ProjectController::markStemReportStale()
+{
+    if (!stemReport_ || stemReportStale_)
+        return;
+    stemReportStale_ = true;
+    Q_EMIT stemReportChanged();
+}
+
+void ProjectController::maybeRunStemReport()
+{
+    if (!stemReportWanted_ || !imports_.empty() || !allClipMediaLoaded())
+        return;
+    stemReportWanted_ = false;
+    if (model_.contentEnd() > 0)
+        runStemReport();
+}
+
+void ProjectController::runStemReport()
+{
+    if (model_.contentEnd() <= 0) {
+        Q_EMIT statusMessage(tr("Nothing to analyse: import stems first."));
+        return;
+    }
+    if (!imports_.empty() || !allClipMediaLoaded()) {
+        stemReportWanted_ = true; // runs as soon as the stems are loaded
+        Q_EMIT statusMessage(tr("The stem report will run when all stems have loaded."));
+        return;
+    }
+
+    // A newer request replaces a running one.
+    stemCancel_->cancel();
+    stemCancel_ = std::make_shared<daw::CancellationSource>();
+    const auto token = stemCancel_->token();
+    const std::uint64_t run = ++stemReportRun_;
+    const std::uint64_t generation = generation_;
+    const daw::ProjectModel model = model_;
+    stemReportRunning_ = true;
+    Q_EMIT stemReportChanged();
+
+    // Not counted as a busy job: the report never blocks saving or exporting.
+    QPointer<ProjectController> self(this);
+    workers_.start([this, self, run, generation, model, token] {
+        daw::StemReportOptions options;
+        options.progress = [this, self, run](double p) {
+            QMetaObject::invokeMethod(
+                this, [self, run, p] { if (self && run == self->stemReportRun_) Q_EMIT self->stemReportProgress(p); },
+                Qt::QueuedConnection);
+        };
+        auto result = std::make_shared<daw::Result<daw::StemReport>>(daw::analyzeStems(model, pool_, options, token));
+        QMetaObject::invokeMethod(
+            this,
+            [this, run, generation, result] {
+                if (generation != generation_ || run != stemReportRun_)
+                    return; // superseded
+                stemReportRunning_ = false;
+                if (!*result) {
+                    if (result->error().code != daw::ErrorCode::Cancelled) {
+                        daw::logging::warn("analysis", "stem report failed", {{"error", result->error().describe()}});
+                        Q_EMIT stemReportFailed(QString::fromStdString(result->error().describe()));
+                    }
+                    Q_EMIT stemReportChanged();
+                    return;
+                }
+                stemReport_ = std::move(**result);
+                stemReportStale_ = false;
+                const fs::path file = root_ / daw::utf8ToPath("Analysis") / daw::utf8ToPath("stem-report.json");
+                if (auto status = daw::writeFileAtomically(file, daw::toJson(*stemReport_).dump(2)); !status)
+                    daw::logging::warn("analysis", "could not store the stem report", {{"error", status.error().describe()}});
+                daw::logging::info("analysis", "stem report",
+                                   {{"tracks", stemReport_->tracks.size()},
+                                    {"advice", stemReport_->advice.size()},
+                                    {"mixLufs", stemReport_->mix.integratedLufs},
+                                    {"mixTruePeak", stemReport_->mix.truePeakDbtp},
+                                    {"seconds", stemReport_->analysisSeconds}});
+                Q_EMIT stemReportChanged();
+            },
+            Qt::QueuedConnection);
+    });
 }

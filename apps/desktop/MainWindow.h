@@ -4,26 +4,32 @@
 #pragma once
 
 #include <daw/project/Metadata.h>
+#include <daw/session/NoiseTools.h>
 
 #include <QIcon>
 #include <QMainWindow>
 
 #include <memory>
+#include <optional>
 
 namespace daw {
 class AnalysisService;
 }
 
+class CleanupPanel;
 class DiagnosticsPanel;
 class EngineBridge;
+class LoudnessDisplay;
 class ProjectController;
 class QAction;
 class QComboBox;
+class QDockWidget;
 class QToolButton;
 class VolumeFader;
 class QLabel;
 class QPlainTextEdit;
 class QScrollBar;
+class StemReportPanel;
 class TrackPanel;
 class WaveformView;
 
@@ -53,6 +59,14 @@ private:
     void onTick();
     void refreshLanes();
     void refreshMixer();
+    void refreshStemReport();
+    void refreshCleanupPanel();
+    void refreshUndoActions();
+    void renameTrackDialog(const QString& trackId);
+    void showCleanupPanel(const QString& trackId = {});
+    /// The waveform's time selection, if any.
+    std::optional<daw::FrameRange> timeSelection() const;
+    void analyzeEverything();
     void togglePlayPause();
     void stopAndReturnToStart();
     void updateTitle();
@@ -63,6 +77,10 @@ private:
     bool saveProject();
     bool saveProjectAs();
     void importAudio();
+    /// Imports audio and MIDI files; asks for a SoundFont first when MIDI is included.
+    void importFiles(const QStringList& files);
+    bool ensureSoundFont(const QString& reason);
+    void showSoundFontDialog(const QString& reason = {});
     void showDeviceDialog();
     void exportMixDialog();
     std::optional<daw::ProfileLibrary> editProfiles(const std::string& selectId);
@@ -79,6 +97,14 @@ private:
     QScrollBar* laneScroll_ = nullptr;
     DiagnosticsPanel* diagnostics_ = nullptr;
     QPlainTextEdit* analysisView_ = nullptr;
+    StemReportPanel* stemPanel_ = nullptr;
+    CleanupPanel* cleanupPanel_ = nullptr;
+    QDockWidget* cleanupDock_ = nullptr;
+    QAction* bypassCleanup_ = nullptr;
+    QAction* listenRemoved_ = nullptr;
+    QAction* undoAction_ = nullptr;
+    QAction* redoAction_ = nullptr;
+    LoudnessDisplay* loudness_ = nullptr;
     QLabel* timeLabel_ = nullptr;
     QLabel* busyLabel_ = nullptr;
     QAction* playAction_ = nullptr;

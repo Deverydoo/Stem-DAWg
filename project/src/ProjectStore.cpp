@@ -17,7 +17,7 @@ namespace daw {
 namespace {
 
 const char* const kLayout[] = {
-    "Media/Original", "Media/Recorded", "Media/Samples", "Analysis",  "Cache/waveforms",
+    "Media/Original", "Media/Processed", "Media/Recorded", "Media/Samples", "Analysis", "Cache/waveforms",
     "Cache/spectrograms", "Presets",    "PluginStates",  "Backups",  "Exports",
 };
 

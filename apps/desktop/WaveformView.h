@@ -3,11 +3,12 @@
 
 #pragma once
 
-// Arrangement-style waveform display (Milestone 1: read-only lanes, ruler,
-// playhead, analysis markers, click-to-seek, zoom/scroll). Draws from peak
+// Arrangement-style waveform display: read-only lanes, ruler, playhead,
+// analysis markers, click-to-seek, zoom/scroll, and a time selection (drag
+// across the lanes; Shift+click extends it, Esc clears it). Draws from peak
 // pyramids only, so cost is independent of file length. Track headers live in
-// TrackPanel, which follows laneLayoutChanged. Clip editing arrives in
-// Milestone 2; GPU rendering (QRhi) is planned once lane counts grow.
+// TrackPanel, which follows laneLayoutChanged. GPU rendering (QRhi) is planned
+// once lane counts grow.
 
 #include <daw/media/PeakPyramid.h>
 
@@ -57,8 +58,18 @@ public:
     void setScrollY(int y);
     void scrollByWheel(int angleDelta);
 
+    /// The time selection in project frames, [start, end); empty when none.
+    bool hasSelection() const noexcept { return selectionEnd_ > selectionStart_; }
+    std::int64_t selectionStart() const noexcept { return selectionStart_; }
+    std::int64_t selectionEnd() const noexcept { return selectionEnd_; }
+    void clearSelection();
+
 Q_SIGNALS:
     void seekRequested(qint64 projectFrame);
+    /// The selection changed; start == end when it was cleared.
+    void selectionChanged(qint64 start, qint64 end);
+    /// A press on a lane (index into the lanes given to setLanes).
+    void laneClicked(int lane);
     void laneLayoutChanged(int laneHeight, int scrollY);
     void verticalRangeChanged(int maximum, int pageStep);
 
@@ -68,6 +79,8 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
 
 private:
@@ -80,7 +93,11 @@ private:
     void drawRuler(class QPainter& painter);
     void drawClip(class QPainter& painter, const WaveformLane& lane, const WaveformClip& clip, const class QRect& laneRect);
     void seekToX(double x);
+    void setSelection(std::int64_t a, std::int64_t b);
+    void drawSelection(class QPainter& painter, int lanesBottom);
     void updateVerticalLayout();
+
+    enum class Drag { None, Scrub, Pending, Select };
 
     static constexpr int kMinLaneHeight = 72;
     static constexpr int kMaxLaneHeight = 140;
@@ -91,6 +108,11 @@ private:
     std::vector<WaveformLane> lanes_;
     std::vector<std::int64_t> markers_;
     std::int64_t playhead_ = 0;
+    std::int64_t selectionStart_ = 0;
+    std::int64_t selectionEnd_ = 0;
+    std::int64_t dragAnchor_ = 0; // the fixed end while selecting
+    double pressX_ = 0.0;
+    Drag drag_ = Drag::None;
     double framesPerPixel_ = 512.0;
     double viewStart_ = 0.0; // frame at the left edge
     int scrollY_ = 0;

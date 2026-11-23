@@ -17,10 +17,15 @@
 
 **Stem DAWg** is a music cleaner and mastering tool. It is not another general-purpose DAW. You load the stems from Suno (or any stem export) or your own recordings, and it helps you remove what ruins them: separation bleed, noise beds, fan hiss, harsh and phasey high ends, stems that sum into clipping. Then you balance and master the result.
 
-> **Status: early development (Milestone 1 complete).** It plays, mixes and exports stems today. The cleaning and mastering tools are next; see the [roadmap](docs/ROADMAP.md).
+> **Status: early development (Milestone 3 complete).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), and exports stems today. AI-artifact repair (M4) and mastering (M5) are next; see the [roadmap](docs/ROADMAP.md).
 
 ## What works today
 
+- **Stem report:** right after import, every stem is measured (loudness, share of the mix, noise bed, activity, low end, stereo) and compared with the others (shared low end, bleed). Plain-language advice follows, for example *"Bass and Synth play the same low end: keep it in Bass and high-pass Synth around 120 Hz"* or *"Drums has a noise bed at -53 dBFS: an expander near -47 dB will clean the gaps"*.
+- **Noise removal:** learned-profile spectral noise reduction for fans, air conditioning and hiss (one click learns the noise from the track's quiet moments), automatic mains-hum detection and removal, an AI **voice denoiser** for spoken recordings (DeepFilterNet3, an optional 8 MB download, running locally), and **Listen to Removed** to hear exactly what is taken out.
+- **Clean-up chain per stem:** DC removal, high-pass, hum removal, noise reduction and a noise-bed expander on every track, live and non-destructive. The stem report suggests the settings (*"Fix: Bass: expander at -31 dB"*) and **Apply All Fixes** sets them up. The expander looks 5 ms ahead, so note attacks stay intact.
+- **Loudness metering (EBU R 128 / ITU-R BS.1770-4):** live momentary, short-term and integrated loudness, loudness range and true peak in the transport bar, in the stem report and in the export summary. Verified against the EBU Tech 3341/3342 test cases.
+- **MIDI playback:** import `.mid` files (such as the MIDI from Suno's advanced stem split) as tracks next to the audio. They play through a General MIDI SoundFont, by default FluidR3_GM, downloaded and verified in the app, and follow the song's tempo map. The first MIDI file sets the project tempo.
 - **Stem mixer, Suno Studio–style:** a coloured lane per stem with mute, solo, volume and pan. Every mixer change is declicked.
 - **Real-time engine:** zero allocations in the audio callback (enforced by tests), sample-exact playback, WASAPI / DirectSound (ASIO optional).
 - **Projects:** versioned `project.json`, atomic saves, backups, autosave and recovery, stems copied into the project folder.
@@ -69,18 +74,29 @@ A git-ignored `CMakeUserPresets.json` can hard-code your Qt path (for example `l
 
 `build/<preset>/bin/<Config>/StemDAWg.exe [project-folder | audio files…]`
 
-- **Import:** Ctrl+I or drag and drop WAV, FLAC, AIFF, OGG or MP3. Numbered Suno stems ("0 Lead Vocals", "1 Backing Vocals", …) stay in order.
+- **Import:** Ctrl+I or drag and drop WAV, FLAC, AIFF, OGG, MP3 or MIDI. Numbered Suno stems ("0 Lead Vocals", "1 Backing Vocals", …) stay in order. Files imported together lose the text they all share ("Song_ (Bass Guitar)" becomes "Bass Guitar").
+- **MIDI:** the first MIDI import offers to download the FluidR3_GM SoundFont (114 MB, MIT licence, from Debian, checked with SHA-256). Any other `.sf2` works too: Settings → SoundFont for MIDI. MIDI tracks are labelled "(MIDI)".
 - **Transport:** Space plays and pauses; Stop returns to the start; Home jumps to the start; click the timeline to seek.
+- **Selecting time:** drag across the tracks to select a stretch of time (Shift+click extends it, Esc or a click clears it). Dragging on a track also shows it in the Clean-up panel.
 - **Navigation:** the wheel scrolls tracks (Shift for sideways), Ctrl+wheel zooms.
-- **Track headers:** M mutes, S solos (several at once; mute wins), the fader sets volume (double-click for 0 dB), the knob pans (double-click to centre).
+- **Undo:** Ctrl+Z undoes any edit (faders, mute, solo, clean-up, imports, renames, deletions); Ctrl+Y redoes. A fader drag is one step.
+- **Track headers:** double-click the name to rename; right-click for Rename, Clean-up and Delete Track. C opens the track's clean-up (blue when on); M mutes; S solos that track alone (Ctrl+click S to solo several; mute wins); the fader sets volume (double-click for 0 dB); the knob pans (double-click to centre).
+- **Clean-up** (right panel, Ctrl+L): voice denoise for speech (Apply renders a cleaned copy, Original switches back; the first use downloads the model), high-pass, hum removal (Detect finds it), noise reduction (Learn Noise first; if the track's quietest moments are not the noise you want gone, select a stretch of pure noise and click Learn from Selection), expander and DC removal for the selected track, with a gain-reduction meter. **Listen to Removed** (Ctrl+Shift+B) plays only what the clean-up removes: if you hear music in it, back off. **Apply Fix** / **Apply All Fixes** in the stem report fill it in from the advice. **Bypass Clean-up** (Ctrl+B) plays everything without it, for comparison; exports always include it.
 - **Master and CLIP:** Suno stems often add up above 0 dBFS. Pull the Master fader down until the CLIP light stays off.
 - **Settings → Artist Profiles**, then **File → Export Mix** (Ctrl+E).
-- **Analyze** (Ctrl+Shift+A) measures every stem in the background; transients show as yellow markers.
-- **Data locations:** profiles in `%LOCALAPPDATA%\StemDAWg\profiles.json`, logs in `%LOCALAPPDATA%\StemDAWg\logs`.
+- **Stem Report** (bottom panel) runs on its own after import. Run it again with **Analyze** or Ctrl+R after changing faders. Click an advice item to find its stem.
+- **Loudness** (transport bar): M, S and I are momentary, short-term and integrated LUFS; TP is the true peak. Play the song from the start for its integrated loudness; click the readout to restart the measurement.
+- **Analysis → Detailed File Analysis** (Ctrl+Shift+A) measures each file in detail (Analysis Log tab); transients show as yellow markers.
+- **Command line:** `stem-report <folder of stems> [--json] [--apply-fixes] [--denoise[=dB]]` prints the same stem report without the app; `--apply-fixes` and `--denoise` also show the stems after the suggested clean-up or noise reduction. `voice-denoise <model folder> <input> <output.wav> [--reduction=dB]` runs the voice model on one file.
+- **Data locations:** profiles in `%LOCALAPPDATA%\StemDAWg\profiles.json`, logs in `%LOCALAPPDATA%\StemDAWg\logs`, the SoundFont in `%LOCALAPPDATA%\StemDAWg\SoundFonts`.
 
 ## Documentation
 
 - [Roadmap](docs/ROADMAP.md): cleaning, noise removal, AI-artifact repair, mastering, audio-to-MIDI
+- [Milestone 2: stem triage, loudness and clean-up](docs/milestone-2/M2-Stem-Triage.md): how the stem report and the meters measure, and how the clean-up chain works
+- [MIDI playback](docs/milestone-2/MIDI-Playback.md): SoundFont rendering, the FluidR3_GM download
+- [Editing and playback](docs/milestone-2/M2-Editing-and-Playback.md): undo/redo, track editing, declick, RF64 export
+- [Milestone 3: noise removal](docs/milestone-3/M3-Noise-Removal.md): spectral noise reduction, hum removal, voice denoise, Listen to Removed
 - [Milestone 1 technical specification](docs/milestone-1/M1-Technical-Specification.md): architecture, real-time rules, file formats
 - [Implementation sequence](docs/milestone-1/M1-Implementation-Sequence.md)
 - [Contributing](CONTRIBUTING.md)
@@ -89,12 +105,14 @@ A git-ignored `CMakeUserPresets.json` can hard-code your Qt path (for example `l
 
 ```
 core/          RT primitives, ids, errors, logging, files      (no JUCE/Qt)
+dsp/           loudness meter, true peak, filters, FFT         (no JUCE/Qt)
 media/         decode, WAV writer + tags, resampler, peaks     (JUCE private)
 engine/        transport, audio engine, device service         (JUCE private)
 project/       model, project.json + migrations, profiles      (no JUCE/Qt)
-session/       media loading, snapshots, import, render/export
+session/       media loading, snapshots, import, render/export, stem report
 ai/            analysis service, analyzers, ONNX backend       (no JUCE/Qt)
 apps/desktop/  Qt application
+tools/         stem-report command-line tool
 assets/        logo and icon masters
 tests/         unit, regression and integration tests
 ```
@@ -104,6 +122,6 @@ tests/         unit, regression and integration tests
 Created by Craig "Deverydoo" Giannelli.
 Copyright © 2026 Chaos Rift Entertainment, LLC and the Stem DAWg contributors.
 
-Stem DAWg is free software under the [GNU Affero General Public License v3.0 or later](LICENSE). It uses JUCE (AGPL-3.0), Qt (LGPL-3.0, dynamically linked), ONNX Runtime (MIT) and nlohmann/json (MIT). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Stem DAWg is free software under the [GNU Affero General Public License v3.0 or later](LICENSE). It uses JUCE (AGPL-3.0), Qt (LGPL-3.0, dynamically linked), ONNX Runtime (MIT), nlohmann/json (MIT), TinySoundFont (MIT) and XZ Embedded (0BSD). The optional FluidR3_GM SoundFont (MIT) is downloaded at run time. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The Stem DAWg name, logo and icon are the project's branding. Forks should use their own name and artwork.

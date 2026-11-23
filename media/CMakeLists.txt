@@ -9,7 +9,13 @@ daw_add_module(media
         src/Resampler.cpp
         src/PeakPyramid.cpp
         src/PeakCache.cpp
+        src/Midi.cpp
+        src/TinySoundFont.cpp
+        src/DebArchive.cpp
+        src/TarGzArchive.cpp
     PUBLIC_DEPS
         daw::core
     PRIVATE_DEPS
-        daw::juce)
+        daw::juce
+        daw::tinysoundfont
+        daw::xz)

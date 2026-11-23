@@ -112,6 +112,37 @@ TEST_CASE("Track pan and solo are optional and default to centre and off", "[pro
     REQUIRE(parsed->tracks[0].pan == -1.0);
 }
 
+TEST_CASE("Track clean-up is written only when set, optional when read, and clamped", "[project][serialize][cleanup]")
+{
+    auto doc = projectToJson(makeRichProject());
+    REQUIRE(doc["tracks"][0].contains("cleanup"));
+    CHECK(doc["tracks"][0]["cleanup"]["highPass"]["slopeDbPerOctave"] == 48);
+    CHECK(doc["tracks"][0]["cleanup"]["expander"]["thresholdDb"] == -47.0);
+    CHECK_FALSE(doc["tracks"][1].contains("cleanup")); // default chain: nothing written
+
+    // Older files have no clean-up: every stage is off.
+    doc["tracks"][0].erase("cleanup");
+    auto parsed = projectFromJson(doc);
+    REQUIRE(parsed.ok());
+    CHECK(parsed->tracks[0].cleanup == TrackCleanup{});
+
+    // Hand-edited nonsense is clamped or ignored, never rejected.
+    doc["tracks"][0]["cleanup"] = {{"dcRemoval", "yes"},
+                                   {"highPass", {{"enabled", true}, {"frequencyHz", 5.0}, {"slopeDbPerOctave", 30}}},
+                                   {"expander", {{"enabled", true}, {"thresholdDb", 12.0}, {"ratio", 0.5}, {"rangeDb", "a lot"}, {"releaseMs", 1e9}}}};
+    parsed = projectFromJson(doc);
+    REQUIRE(parsed.ok());
+    const TrackCleanup& c = parsed->tracks[0].cleanup;
+    CHECK_FALSE(c.dcRemoval);
+    CHECK(c.highPass.enabled);
+    CHECK(c.highPass.frequencyHz == HighPassSettings::kMinHz);
+    CHECK(c.highPass.slopeDbPerOctave == 24);
+    CHECK(c.expander.thresholdDb == 0.0);
+    CHECK(c.expander.ratio == 1.0);
+    CHECK(c.expander.rangeDb == ExpanderSettings{}.rangeDb);
+    CHECK(c.expander.releaseMs == 2000.0);
+}
+
 TEST_CASE("Projects saved under the old Industrial DAW format id still open", "[project][serialize][regression]")
 {
     const ProjectModel original = makeRichProject();

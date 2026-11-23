@@ -32,6 +32,18 @@ daw_add_test(daw_core_tests
         core/CoreUtilityTests.cpp
     LIBS daw::core)
 
+# The dsp and engine test binaries replace global operator new/delete
+# (AllocationGuard) to prove real-time code is allocation-free.
+daw_add_test(daw_dsp_tests
+    SOURCES
+        support/AllocationGuard.cpp
+        dsp/FftTests.cpp
+        dsp/DeepFilterTests.cpp
+        dsp/LoudnessTests.cpp
+        dsp/CleanupChainTests.cpp
+        dsp/DenoiseTests.cpp
+    LIBS daw::dsp)
+
 # The engine test binary replaces global operator new/delete (AllocationGuard)
 # to prove the audio callback is allocation-free.
 daw_add_test(daw_engine_tests
@@ -40,6 +52,8 @@ daw_add_test(daw_engine_tests
         engine/TransportTests.cpp
         engine/AudioEngineTests.cpp
         engine/RealtimeSafetyTests.cpp
+        engine/CleanupEngineTests.cpp
+        engine/DeclickTests.cpp
     LIBS daw::engine)
 
 daw_add_test(daw_media_tests
@@ -49,6 +63,9 @@ daw_add_test(daw_media_tests
         media/PeakCacheTests.cpp
         media/ResamplerTests.cpp
         media/AudioTagsTests.cpp
+        media/MidiTests.cpp
+        media/Rf64Tests.cpp
+        media/ArchiveTests.cpp
     LIBS daw::media)
 
 daw_add_test(daw_project_tests
@@ -61,7 +78,6 @@ daw_add_test(daw_project_tests
 
 daw_add_test(daw_ai_tests
     SOURCES
-        ai/FftTests.cpp
         ai/AnalyzerTests.cpp
         ai/AnalysisServiceTests.cpp
         ai/InferenceTests.cpp
@@ -73,4 +89,8 @@ daw_add_test(daw_integration_tests
         integration/SessionTests.cpp
         integration/DefinitionOfDoneTests.cpp
         integration/RenderTests.cpp
+        integration/StemReportTests.cpp
+        integration/UndoTests.cpp
+        integration/NoiseToolsTests.cpp
+        integration/VoiceToolsTests.cpp
     LIBS daw::session daw::ai)

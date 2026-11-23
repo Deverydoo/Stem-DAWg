@@ -8,7 +8,16 @@ Stem DAWg is licensed under the **GNU Affero General Public License v3.0 or late
 | [Qt](https://www.qt.io) | 6.5+ (developed with 6.12) | LGPL-3.0 | Desktop user interface | Linked dynamically. The Qt DLLs ship unmodified beside the executable and can be replaced by the user. Qt source: https://download.qt.io |
 | [ONNX Runtime](https://onnxruntime.ai) | 1.22.0 | MIT | AI model inference | Downloaded from the official NuGet package at build time. |
 | [nlohmann/json](https://github.com/nlohmann/json) | 3.11.3 | MIT | Project, profile and analysis files | |
+| [TinySoundFont and TinyMidiLoader](https://github.com/schellingb/TinySoundFont) | commit a3621a1 | MIT | MIDI file loading and SoundFont synthesis | Single-header libraries, compiled into the media module. |
+| [XZ Embedded](https://github.com/tukaani-project/xz-embedded) | 2024-12-30 | 0BSD | Unpacking the SoundFont download (.xz) | Decoder only. |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.7.1 | BSL-1.0 | Unit tests | Test-only, not shipped. |
+
+## Downloaded at run time (not part of the source or the build)
+
+| Component | Licence | Notes |
+|-----------|---------|-------|
+| [FluidR3_GM SoundFont](https://packages.debian.org/source/sid/fluid-soundfont) by Frank Wen | MIT | Downloaded only when the user asks (Settings > SoundFont for MIDI), from Debian's `fluid-soundfont-gm` 3.1-5.3 package, and verified with SHA-256. "Copyright (c) 2000-2002, 2008 Frank Wen. I hereby release Fluid under the MIT license." |
+| [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) voice model by Hendrik Schröter | MIT or Apache-2.0 | Downloaded only when the user asks (Clean-up > Voice denoise), as the ONNX export `models/DeepFilterNet3_onnx.tar.gz` pinned to commit 84d57ec of the project's repository, and verified with SHA-256 (the archive and each graph). "Copyright (c) 2021 Hendrik Schröter." Stem DAWg reimplements its feature extraction and output stages in C++ (`dsp/DeepFilterDsp`), following the reference implementation (libDF, same licence). |
 
 ## Optional and planned components
 
@@ -16,7 +25,7 @@ Stem DAWg is licensed under the **GNU Affero General Public License v3.0 or late
 |-----------|---------|--------|
 | [Steinberg ASIO SDK](https://www.steinberg.net/developers/) | GPL-3.0 (open-source option since October 2025) or proprietary | Optional (`DAW_ENABLE_ASIO`, off by default). GPL-3.0 is compatible with AGPL-3.0 (section 13 of both licences). Builds that enable it must use the SDK under GPL-3.0. "ASIO" is a Steinberg trademark. |
 | [Steinberg VST 3 SDK](https://github.com/steinbergmedia/vst3sdk) | MIT (since VST 3.8, October 2025) | Planned for plugin hosting. "VST" is a Steinberg trademark. |
-| AI models (e.g. DeepFilterNet, Basic Pitch) | Must be MIT, Apache-2.0, BSD or similarly permissive, or GPL/AGPL-compatible | Each model's licence and the provenance of its training data are recorded in its manifest before it is bundled. |
+| Further AI models (e.g. Basic Pitch) | Must be MIT, Apache-2.0, BSD or similarly permissive, or GPL/AGPL-compatible | Each model's licence and the provenance of its training data are recorded before it is offered. |
 
 ## Rules for new dependencies
 

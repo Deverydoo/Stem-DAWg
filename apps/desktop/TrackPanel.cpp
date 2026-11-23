@@ -7,10 +7,14 @@
 
 #include <daw/project/ProjectModel.h>
 
+#include <QContextMenuEvent>
+#include <QGuiApplication>
+#include <QMenu>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -46,6 +50,13 @@ QToolButton#mute, QToolButton#solo {
 QToolButton#mute:hover, QToolButton#solo:hover { background: #40434a; }
 QToolButton#mute:checked { background: #e0a030; color: #161616; }
 QToolButton#solo:checked { background: #3fbf6f; color: #161616; }
+QToolButton#cleanup {
+    background: #34373d; color: #b5b8bf; border: none; border-radius: 3px;
+    font-weight: bold; min-width: 22px; max-width: 22px; min-height: 20px; max-height: 20px;
+}
+QToolButton#cleanup:hover { background: #40434a; }
+QToolButton#cleanup[chain="on"] { background: #4a90d9; color: #161616; }
+QToolButton#cleanup[chain="bypassed"] { background: #34373d; color: #4a90d9; border: 1px solid #4a90d9; }
 VolumeFader::groove:horizontal { height: 4px; background: #3a3d44; border-radius: 2px; }
 VolumeFader::sub-page:horizontal { background: #8a8d95; border-radius: 2px; }
 VolumeFader::handle:horizontal {
@@ -252,9 +263,15 @@ TrackHeader::TrackHeader(QWidget* parent) : QWidget(parent)
     solo_->setCheckable(true);
     solo_->setFocusPolicy(Qt::NoFocus);
     solo_->setToolTip(helpTip(tr("Solo"),
-                              tr("Plays only the soloed tracks so you can hear them on their own.\n"
-                                 "Solo several tracks to hear them together. Click again to un-solo.\n"
+                              tr("Plays only this track so you can hear it on its own; soloing another track moves the solo there.\n"
+                                 "Ctrl+click to solo several tracks together. Click again to un-solo.\n"
                                  "Solo affects the exported mix too, so clear it before exporting.")));
+
+    cleanup_ = new QToolButton(this);
+    cleanup_->setObjectName(QStringLiteral("cleanup"));
+    cleanup_->setText(QStringLiteral("C"));
+    cleanup_->setFocusPolicy(Qt::NoFocus);
+    cleanup_->setProperty("chain", QStringLiteral("off"));
 
     fader_ = new VolumeFader(this);
     gainLabel_ = new QLabel(VolumeFader::formatDb(0.0), this);
@@ -277,6 +294,7 @@ TrackHeader::TrackHeader(QWidget* parent) : QWidget(parent)
     top->setSpacing(4);
     top->addWidget(number_);
     top->addWidget(name_, 1);
+    top->addWidget(cleanup_);
     top->addWidget(mute_);
     top->addWidget(solo_);
 
@@ -301,8 +319,9 @@ TrackHeader::TrackHeader(QWidget* parent) : QWidget(parent)
     });
     connect(solo_, &QToolButton::toggled, this, [this](bool on) {
         state_.soloed = on;
-        Q_EMIT soloToggled(on);
+        Q_EMIT soloToggled(on, QGuiApplication::keyboardModifiers().testFlag(Qt::ControlModifier));
     });
+    connect(cleanup_, &QToolButton::clicked, this, &TrackHeader::cleanupRequested);
     connect(fader_, &VolumeFader::gainDbChanged, this, [this](double db) {
         state_.gainDb = db;
         gainLabel_->setText(VolumeFader::formatDb(db));
@@ -329,6 +348,21 @@ void TrackHeader::setState(const TrackHeaderState& state)
         const QSignalBlocker block(solo_);
         solo_->setChecked(state.soloed);
     }
+    const QString chain = state.cleanup == TrackHeaderState::Cleanup::On         ? QStringLiteral("on")
+                          : state.cleanup == TrackHeaderState::Cleanup::Bypassed ? QStringLiteral("bypassed")
+                                                                                 : QStringLiteral("off");
+    if (cleanup_->property("chain").toString() != chain) {
+        cleanup_->setProperty("chain", chain);
+        cleanup_->style()->unpolish(cleanup_);
+        cleanup_->style()->polish(cleanup_);
+    }
+    const QString cleanupBody =
+        state.cleanup == TrackHeaderState::Cleanup::Off
+            ? tr("No clean-up on this track. Click to open the Clean-up panel:\nhigh-pass, expander (noise bed) and DC removal.")
+            : tr("%1%2\nClick to edit it in the Clean-up panel.")
+                  .arg(state.cleanupSummary,
+                       state.cleanup == TrackHeaderState::Cleanup::Bypassed ? tr("\nBypassed: the track plays without it.") : QString());
+    cleanup_->setToolTip(helpTip(tr("Clean-up"), cleanupBody));
     if (fader_->gainDb() != state.gainDb && !fader_->isSliderDown())
         fader_->setGainDb(state.gainDb);
     gainLabel_->setText(VolumeFader::formatDb(state.gainDb));
@@ -339,7 +373,8 @@ void TrackHeader::setState(const TrackHeaderState& state)
     if (nameChanged) {
         number_->setText(QString::number(state.number));
         name_->setToolTip(helpTip(state.name, tr("Track %1. The colour strip is picked from the stem name "
-                                                  "(vocals, drums, bass, guitar, keys, synth...).")
+                                                  "(vocals, drums, bass, guitar, keys, synth...).\n"
+                                                  "Double-click to rename; right-click for more.")
                                                    .arg(state.number)));
         updateNameText();
     }
@@ -347,6 +382,24 @@ void TrackHeader::setState(const TrackHeaderState& state)
         name_->setStyleSheet(state.audible ? QString() : QStringLiteral("color: #6c6f76;"));
         update();
     }
+}
+
+void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
+{
+    QMenu menu(this);
+    menu.addAction(tr("Rename Track..."), this, &TrackHeader::renameRequested);
+    menu.addAction(tr("Clean-up..."), this, &TrackHeader::cleanupRequested);
+    menu.addSeparator();
+    menu.addAction(tr("Delete Track"), this, &TrackHeader::deleteRequested);
+    menu.exec(event->globalPos());
+}
+
+void TrackHeader::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && name_->geometry().contains(event->position().toPoint()))
+        Q_EMIT renameRequested();
+    else
+        QWidget::mouseDoubleClickEvent(event);
 }
 
 void TrackHeader::updateNameText()
@@ -421,7 +474,11 @@ void TrackPanel::setTracks(const std::vector<TrackHeaderState>& tracks)
             connect(header, &TrackHeader::gainChanged, this, [this, id](double db) { Q_EMIT gainChanged(id, db); });
             connect(header, &TrackHeader::panChanged, this, [this, id](double pan) { Q_EMIT panChanged(id, pan); });
             connect(header, &TrackHeader::muteToggled, this, [this, id](bool on) { Q_EMIT muteToggled(id, on); });
-            connect(header, &TrackHeader::soloToggled, this, [this, id](bool on) { Q_EMIT soloToggled(id, on); });
+            connect(header, &TrackHeader::soloToggled, this,
+                    [this, id](bool on, bool additive) { Q_EMIT soloToggled(id, on, additive); });
+            connect(header, &TrackHeader::cleanupRequested, this, [this, id] { Q_EMIT cleanupRequested(id); });
+            connect(header, &TrackHeader::renameRequested, this, [this, id] { Q_EMIT renameRequested(id); });
+            connect(header, &TrackHeader::deleteRequested, this, [this, id] { Q_EMIT deleteRequested(id); });
             header->show();
         }
         header->setState(state);

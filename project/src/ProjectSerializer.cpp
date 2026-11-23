@@ -43,6 +43,100 @@ MediaStorage storageFromString(const std::string& text)
 
 } // namespace
 
+namespace {
+
+json denoiseToJson(const DenoiseSettings& d)
+{
+    json j{{"enabled", d.enabled}, {"reductionDb", d.reductionDb}, {"sensitivityDb", d.sensitivityDb}};
+    if (!d.profile.empty()) {
+        // 0.01 dB steps keep the file compact (profiles are learned at that resolution).
+        json power = json::array();
+        for (float v : d.profile.powerDb)
+            power.push_back(std::round(static_cast<double>(v) * 100.0) / 100.0);
+        j["profile"] = {{"sampleRate", d.profile.sampleRate},
+                        {"fftSize", d.profile.fftSize},
+                        {"seconds", d.profile.seconds},
+                        {"powerDb", std::move(power)}};
+        if (d.profile.fromSelection)
+            j["profile"]["source"] = "selection";
+    }
+    return j;
+}
+
+} // namespace
+
+json cleanupToJson(const TrackCleanup& c)
+{
+    return {{"bypassed", c.bypassed},
+            {"dcRemoval", c.dcRemoval},
+            {"highPass",
+             {{"enabled", c.highPass.enabled},
+              {"frequencyHz", c.highPass.frequencyHz},
+              {"slopeDbPerOctave", c.highPass.slopeDbPerOctave}}},
+            {"expander",
+             {{"enabled", c.expander.enabled},
+              {"thresholdDb", c.expander.thresholdDb},
+              {"ratio", c.expander.ratio},
+              {"rangeDb", c.expander.rangeDb},
+              {"releaseMs", c.expander.releaseMs}}},
+            {"hum", {{"enabled", c.hum.enabled}, {"frequencyHz", c.hum.frequencyHz}, {"harmonics", c.hum.harmonics}}},
+            {"denoise", denoiseToJson(c.denoise)}};
+}
+
+// Missing or malformed values fall back to the defaults; numbers are clamped
+// to their ranges, so a hand-edited file can never configure an unstable filter.
+TrackCleanup cleanupFromJson(const json& j)
+{
+    TrackCleanup c;
+    if (!j.is_object())
+        return c;
+    const auto flag = [](const json& o, const char* key, bool fallback) {
+        const auto it = o.find(key);
+        return it != o.end() && it->is_boolean() ? it->get<bool>() : fallback;
+    };
+    const auto number = [](const json& o, const char* key, double fallback) {
+        const auto it = o.find(key);
+        return it != o.end() && it->is_number() && std::isfinite(it->get<double>()) ? it->get<double>() : fallback;
+    };
+    c.bypassed = flag(j, "bypassed", c.bypassed);
+    c.dcRemoval = flag(j, "dcRemoval", c.dcRemoval);
+    if (const auto hp = j.find("highPass"); hp != j.end() && hp->is_object()) {
+        c.highPass.enabled = flag(*hp, "enabled", c.highPass.enabled);
+        c.highPass.frequencyHz = number(*hp, "frequencyHz", c.highPass.frequencyHz);
+        c.highPass.slopeDbPerOctave = static_cast<int>(number(*hp, "slopeDbPerOctave", c.highPass.slopeDbPerOctave));
+    }
+    if (const auto ex = j.find("expander"); ex != j.end() && ex->is_object()) {
+        c.expander.enabled = flag(*ex, "enabled", c.expander.enabled);
+        c.expander.thresholdDb = number(*ex, "thresholdDb", c.expander.thresholdDb);
+        c.expander.ratio = number(*ex, "ratio", c.expander.ratio);
+        c.expander.rangeDb = number(*ex, "rangeDb", c.expander.rangeDb);
+        c.expander.releaseMs = number(*ex, "releaseMs", c.expander.releaseMs);
+    }
+    if (const auto hum = j.find("hum"); hum != j.end() && hum->is_object()) {
+        c.hum.enabled = flag(*hum, "enabled", c.hum.enabled);
+        c.hum.frequencyHz = number(*hum, "frequencyHz", c.hum.frequencyHz);
+        c.hum.harmonics = static_cast<int>(number(*hum, "harmonics", c.hum.harmonics));
+    }
+    if (const auto dn = j.find("denoise"); dn != j.end() && dn->is_object()) {
+        c.denoise.enabled = flag(*dn, "enabled", c.denoise.enabled);
+        c.denoise.reductionDb = number(*dn, "reductionDb", c.denoise.reductionDb);
+        c.denoise.sensitivityDb = number(*dn, "sensitivityDb", c.denoise.sensitivityDb);
+        if (const auto pr = dn->find("profile"); pr != dn->end() && pr->is_object()) {
+            NoiseProfile& p = c.denoise.profile;
+            p.sampleRate = number(*pr, "sampleRate", 0.0);
+            p.fftSize = static_cast<int>(number(*pr, "fftSize", 0.0));
+            p.seconds = number(*pr, "seconds", 0.0);
+            if (const auto src = pr->find("source"); src != pr->end() && src->is_string())
+                p.fromSelection = src->get<std::string>() == "selection";
+            if (const auto pw = pr->find("powerDb"); pw != pr->end() && pw->is_array())
+                for (const json& v : *pw)
+                    p.powerDb.push_back(v.is_number() ? static_cast<float>(v.get<double>()) : -300.0f);
+        }
+    }
+    c.clamp();
+    return c;
+}
+
 json projectToJson(const ProjectModel& model)
 {
     json doc;
@@ -70,6 +164,10 @@ json projectToJson(const ProjectModel& model)
                          {"channels", m.numChannels},
                          {"frames", m.numFrames},
                          {"sourceKey", keyToHex(m.sourceKey)}});
+        if (m.derivation)
+            media.back()["derivedFrom"] = {{"source", m.derivation->source.str()},
+                                           {"process", m.derivation->process},
+                                           {"amountDb", m.derivation->amountDb}};
     }
     doc["media"] = std::move(media);
 
@@ -85,13 +183,16 @@ json projectToJson(const ProjectModel& model)
                              {"length", c.length},
                              {"gainDb", c.gainDb}});
         }
-        tracks.push_back({{"id", t.id.str()},
-                          {"name", t.name},
-                          {"gainDb", t.gainDb},
-                          {"pan", t.pan},
-                          {"muted", t.muted},
-                          {"solo", t.soloed},
-                          {"clips", std::move(clips)}});
+        json track = {{"id", t.id.str()},
+                      {"name", t.name},
+                      {"gainDb", t.gainDb},
+                      {"pan", t.pan},
+                      {"muted", t.muted},
+                      {"solo", t.soloed},
+                      {"clips", std::move(clips)}};
+        if (t.cleanup != TrackCleanup{})
+            track["cleanup"] = cleanupToJson(t.cleanup);
+        tracks.push_back(std::move(track));
     }
     doc["tracks"] = std::move(tracks);
 
@@ -155,6 +256,9 @@ Result<ProjectModel> projectFromJson(json doc, const MigrationRegistry& migratio
             ref.numChannels = m.at("channels").get<int>();
             ref.numFrames = m.at("frames").get<std::int64_t>();
             ref.sourceKey = hexToKey(m.value("sourceKey", std::string{}));
+            if (const auto d = m.find("derivedFrom"); d != m.end() && d->is_object())
+                ref.derivation = MediaDerivation{MediaId(d->value("source", std::string{})), d->value("process", std::string{}),
+                                                 d->value("amountDb", 0.0)};
             model.media.push_back(std::move(ref));
         }
 
@@ -166,6 +270,8 @@ Result<ProjectModel> projectFromJson(json doc, const MigrationRegistry& migratio
             track.pan = std::clamp(t.value("pan", 0.0), -1.0, 1.0);
             track.muted = t.value("muted", false);
             track.soloed = t.value("solo", false);
+            if (t.contains("cleanup"))
+                track.cleanup = cleanupFromJson(t.at("cleanup"));
             for (const json& c : t.value("clips", json::array())) {
                 Clip clip;
                 clip.id = ClipId(c.at("id").get<std::string>());
@@ -234,6 +340,9 @@ Status validateProject(const ProjectModel& model)
         if (m.path.empty() || !(m.sampleRate > 0.0) || m.numChannels <= 0 || m.numFrames < 0)
             return fail("invalid media entry '" + m.id.str() + "'");
     }
+    for (const MediaRef& m : model.media)
+        if (m.derivation && (m.derivation->source == m.id || model.findMedia(m.derivation->source) == nullptr))
+            return fail("media '" + m.id.str() + "' is derived from unknown media '" + m.derivation->source.str() + "'");
     for (const Track& t : model.tracks) {
         if (!unique(t.id.str()))
             return fail("missing or duplicate track id '" + t.id.str() + "'");

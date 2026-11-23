@@ -75,11 +75,12 @@ The automatic ONNX download uses NuGet because the GitHub release URLs were unre
 | Module | May depend on | Must not depend on | Rationale |
 |--------|---------------|--------------------|-----------|
 | `core` | std, nlohmann_json | JUCE, Qt, ORT | Shared vocabulary, RT primitives |
+| `dsp` | core | JUCE, Qt, ORT | Signal processing shared by engine, analyzers and renders (added in M2) |
 | `media` | core, JUCE (private) | Qt | Decoding/peaks run headless |
-| `engine` | core, JUCE (private) | Qt, project, ai | RT code stays independent of persistence and UI |
+| `engine` | core, dsp, JUCE (private) | Qt, project, ai | RT code stays independent of persistence and UI |
 | `project` | core | JUCE, Qt | Project files readable by tools and tests without audio stacks |
 | `session` | core, media, engine, project | Qt | Glue that is fully testable headless |
-| `ai` | core, ORT (private) | JUCE, Qt, engine | Inference can never reach the audio thread |
+| `ai` | core, dsp, ORT (private) | JUCE, Qt, engine | Inference can never reach the audio thread |
 | `apps/desktop` | all + Qt | — | Only place Qt appears |
 
 JUCE is linked `PRIVATE`, and public headers of `engine` and `media` are JUCE-free (pimpl). Qt translation units therefore never include JUCE headers, which avoids macro and keyword collisions.
@@ -91,6 +92,7 @@ JUCE is compiled once into `daw_juce` (`third_party/juce_static`). JUCE module t
 ```
 CMakeLists.txt  CMakePresets.json  cmake/  third_party/juce_static/
 core/     include/daw/core/*     src/*
+dsp/      include/daw/dsp/*      src/*      (added in M2)
 media/    include/daw/media/*    src/*
 engine/   include/daw/engine/*   src/*
 project/  include/daw/project/*  src/*
@@ -101,7 +103,7 @@ tests/    core/ engine/ media/ project/ ai/ integration/ support/
 docs/milestone-1/
 ```
 
-Later milestones add `dsp/`, `reconstruction/`, `plugins/` and `apps/plugin_scanner/` beside these, following the same `include/` + `src/` + `daw_add_module` pattern.
+Later milestones add `reconstruction/`, `plugins/` and `apps/plugin_scanner/` beside these, following the same `include/` + `src/` + `daw_add_module` pattern.
 
 ---
 
@@ -283,6 +285,7 @@ u64 FNV-1a checksum of all preceding bytes
 
 - 64-bit keys are stored as hex strings, so JS and Python tooling never loses precision. Frame counts are JSON integers; nlohmann preserves `int64`.
 - `pan` (−1…+1) and `solo` were added after the first v1 files. They are optional with defaults 0 and `false`, so older v1 files load unchanged and older builds ignore them, which needs no schema bump under the policy in 7.4. Out-of-range `pan` in a hand-edited file is clamped on load; the fader floor `gainDb = -144` means silence (shown as −inf).
+- An optional per-track `"cleanup"` object (added in M2) stores the track's clean-up chain: `bypassed`, `dcRemoval`, `highPass {enabled, frequencyHz, slopeDbPerOctave}`, `expander {enabled, thresholdDb, ratio, rangeDb, releaseMs}`, and since M3 `hum {enabled, frequencyHz, harmonics}` and `denoise {enabled, reductionDb, sensitivityDb, profile {sampleRate, fftSize, seconds, source?, powerDb[]}}` (the noise profile at 0.01 dB resolution; `source` is `"selection"` when it was learned from a selected region). It is written only when it differs from the default (everything off). Missing or invalid values take their defaults, and numbers are clamped to their ranges, so neither older files nor hand edits can configure an unstable filter. No schema bump is needed (section 7.4). See [M2-Stem-Triage.md](../milestone-2/M2-Stem-Triage.md).
 - An optional `"release": { "profileId": "…", "fields": { "title": "…", "album": "…", … } }` block stores the song-level export metadata and the artist profile chosen for the project (section 7.5). Only non-empty fields are written.
 - Validation on load and save rejects non-positive rates, duplicate or missing ids, clips that reference unknown media, and negative positions or lengths.
 
@@ -290,7 +293,7 @@ u64 FNV-1a checksum of all preceding bytes
 
 ```
 <Project>/project.json
-Media/Original/  Media/Recorded/  Media/Samples/
+Media/Original/  Media/Processed/  Media/Recorded/  Media/Samples/
 Analysis/<mediaId>/<analyzer>-v<version>.json
 Cache/waveforms/  Cache/spectrograms/
 Presets/  PluginStates/  Backups/  Exports/
@@ -298,6 +301,7 @@ Presets/  PluginStates/  Backups/  Exports/
 
 - **Copied** media (default) lives in `Media/Original` with a project-relative path, so the folder is portable; a test moves it to a Unicode-named path and reopens it. Name clashes become `name (2).wav`.
 - **Referenced** media keeps an absolute path.
+- **Processed** copies (voice denoise, added in M3) live in `Media/Processed`. Their media entry carries `"derivedFrom": {"source", "process", "amountDb"}`, naming the media they were made from, which stays in the project; validation rejects a copy whose source is missing.
 
 ### 7.4 Save protocol, autosave and migrations
 
@@ -323,7 +327,7 @@ The tests drive a hypothetical v0 → v1 migration (seconds → frames) end to e
 ### 7.6 Final render (Export Mix)
 
 - `renderMix` runs a private `AudioEngine` over the same snapshot type the live engine plays, so exports match playback (mixer, pan law, mute/solo, ramps). It renders **at the project sample rate from the original media**, resampling only media whose native rate differs, never from the device-rate playback copies.
-- Formats: WAV 24-bit PCM (default), 16-bit PCM with TPDF dither (±1 LSB, deterministic seed), 32-bit float (keeps overs). Files are written atomically; renders over 4 GB are refused until RF64 export lands.
+- Formats: WAV 24-bit PCM (default), 16-bit PCM with TPDF dither (±1 LSB, deterministic seed), 32-bit float (keeps overs). Files are written atomically. A file over 4 GB is written as RF64 (EBU Tech 3306, added in M2): a `ds64` chunk carries the 64-bit sizes, and the tag reader understands it.
 - The export report gives size, duration, sample peak and the number of clipped samples; clipping shows a warning with the master reduction needed. The export dialog warns when solo or mute will leave tracks out.
 
 ---
@@ -368,7 +372,7 @@ The transient detector is regression-tested on a Suno-style fixture: kicks under
 ## 9. User interface (M1)
 
 - **Track headers** (`TrackPanel`, left of the lanes, Suno Studio–style): colour strip, number and name, **M**ute and **S**olo buttons, a volume fader (fader taper −inf…+6 dB, 0 dB detent, double-click resets) with a dB readout, and a pan knob (drag up/right, Shift for fine, wheel steps, double-click centres) with an L/C/R readout. Headers stay aligned with the lanes and scroll with them. Muted and solo-silenced tracks are dimmed in both the header and the lane. Edits go straight to `ProjectController` → model → new snapshot (cheap: pointers only) and mark the project dirty.
-- **Arrangement view** (`WaveformView`): coloured lanes (colour from the stem name: vocals, drums, bass, guitar, keys, synth…), a time ruler, clip waveforms from peak pyramids with stereo channels split or combined (View → Split Stereo Channels), analysis markers, playhead with page-follow, click/drag to seek, Ctrl+wheel to zoom around the cursor, wheel to scroll lanes vertically (horizontally when all lanes fit, or with Shift), zoom-to-fit.
+- **Arrangement view** (`WaveformView`): coloured lanes (colour from the stem name: vocals, drums, bass, guitar, keys, synth…), a time ruler, clip waveforms from peak pyramids with stereo channels split or combined (View → Split Stereo Channels), analysis markers, playhead with page-follow, click to seek (drag on the ruler to scrub), a time selection dragged across the lanes (Shift+click extends, Esc clears; added in M3), Ctrl+wheel to zoom around the cursor, wheel to scroll lanes vertically (horizontally when all lanes fit, or with Shift), zoom-to-fit.
 - **Transport bar:** Return to start (Home), Play/Pause (Space), Stop (stop and return to start), position as `mm:ss.mmm` plus `bar.beat.tick` (960 PPQ), Analyze, the **artist profile switcher**, and the **master section** (fader, dB readout, CLIP light that latches when the output exceeds 0 dBFS; click to reset).
 - **Hover help:** every control, menu item, diagnostics row and dialog field has a tooltip with a bold title and a plain-language explanation (including which tag each metadata field writes). The dark theme uses white typed text and light-grey placeholder hints.
 - **Settings → Artist Profiles** (`ProfileDialog`) and **File → Export Mix** (Ctrl+E, `ExportDialog`): empty song fields show the inherited profile value as placeholder text, and a summary shows the resolved artist, label, copyright, website and artwork.
@@ -394,15 +398,16 @@ The other five workspaces (Mixer, Piano Roll, Spectral, Reconstruction, Masterin
 
 ## 11. Testing strategy
 
-Run with `ctest --preset local-debug` (or `-C Release`). There are 112 CTest cases in 6 executables, all generated audio (no binary fixtures):
+Run with `ctest --preset local-debug` (or `-C Release`). There are 184 CTest cases in 7 executables (as of M3), all generated audio (no binary fixtures):
 
 | Binary | Covers |
 |--------|--------|
 | `daw_core_tests` | SPSC FIFO, wrap-around and 2-thread stress; snapshot exchange (adopt, retire, superseded, 20 000-publish contention, no leaks); UUIDs; Result; cancellation; FNV vectors; atomic writes incl. Unicode paths; timestamps; logger delivery and audio-thread refusal |
+| `daw_dsp_tests` | FFT; BS.1770-4 K-weighting coefficients; EBU Tech 3341 tests 1-5 and Tech 3342 loudness range; true peak; mono/stereo weighting; block-size invariance; allocation-free metering; clean-up chain response, expander timing and block-size invariance (added in M2, see [M2-Stem-Triage.md](../milestone-2/M2-Stem-Triage.md)); spectral noise reduction, hum notches, listen-to-removed (added in M3, see [M3-Noise-Removal.md](../milestone-3/M3-Noise-Removal.md)) |
 | `daw_engine_tests` | Transport semantics and 24 h exactness; sample-exact clip rendering; **block-size invariance**; seek; stop-at-end exact frame; mono→stereo and gain; rate mismatch; snapshot swap mid-play; queued vs immediate commands; meters; per-channel track gains; **10 ms gain ramps** (monotonic, bounded step, exact after, block-size invariant), no ramp while stopped or for new tracks; **zero heap use in `process()`** incl. ramp re-matching over 16 reordered tracks; concurrent control/audio threads |
 | `daw_media_tests` | WAV metadata round trip through RIFF INFO + ID3v2.3 (ASCII and Unicode, artwork, padding, RIFF size); tagged files decode to identical audio; deterministic, unbiased ≤1 LSB TPDF dither; WAV round trip (16/24/float × mono/stereo); missing, unsupported, over-limit; cancellation; Unicode paths; peak pyramid vs brute force (all levels); query exactness/conservativeness; level selection; cache round trip; stale, corrupt, truncated and missing caches; source keys; resampler quality and timing (44.1↔48, 48→96), alias rejection, cancellation |
 | `daw_project_tests` | Lossless round trip of a project using every field (incl. >32-bit frame counts, Unicode); format/version errors; validation (incl. pan range); defaults (incl. legacy files without pan/solo); metadata precedence and placeholders; profile library round trip, repair and version refusal; release block; migration chain, missing/failing/throwing steps; layout; backups rotation; refusal of invalid models; autosave recovery rules; portable copied media; referenced media |
-| `daw_ai_tests` | FFT; level analyzer on known signals; transients on clicks, **drone-masked kicks**, silence, steady tone; spectral bands; cancellation; service results, callbacks, cancellation, failures, priorities, shutdown; model registry/manifest; ONNX init, self-test, file models with Unicode paths, 4-thread concurrent inference, provider fallback; probe analyzer in a job |
+| `daw_ai_tests` | Level analyzer on known signals; transients on clicks, **drone-masked kicks**, silence, steady tone; spectral bands; cancellation; service results, callbacks, cancellation, failures, priorities, shutdown; model registry/manifest; ONNX init, self-test, file models with Unicode paths, 4-thread concurrent inference, provider fallback; probe analyzer in a job |
 | `daw_integration_tests` | Import/staging; project-rate rules; media loading with peak cache hit/rebuild and renditions; snapshot time mapping and missing media; fader/pan/mute/solo-in-place resolution; stable per-track snapshot keys; render equals the expected mix incl. pan, mute and master; clipping report; project-rate render with resampled media; tagged export matches the render bit-for-bit; decode→analyze regression; **definition of done** (bit-identical reopen at native and resampled rates); background analysis without deadline misses |
 
 Regression measures planned for M3 onward (in the roadmap): rendered-output hashes per fixture project, phase and timing offsets after latency compensation, LUFS and true-peak deltas.
@@ -419,7 +424,10 @@ Regression measures planned for M3 onward (in the roadmap): rendered-output hash
 | JUCE | 8.0.7 | **AGPL-3.0** (open-source option) | Same licence as the project |
 | ONNX Runtime | 1.22.0 | MIT | Notice |
 | nlohmann/json | 3.11.3 | MIT | Notice |
+| TinySoundFont / TinyMidiLoader | commit a3621a1 | MIT | Notice (added in M2: MIDI playback) |
+| XZ Embedded | 2024-12-30 | 0BSD | None required (added in M2: SoundFont download) |
 | Catch2 | 3.7.1 | BSL-1.0 | Test-only |
+| FluidR3_GM SoundFont | Debian 3.1-5.3 | MIT | Downloaded at run time on request, never shipped; credit Frank Wen |
 | ASIO SDK | optional | GPL-3.0 option (since Oct 2025) or proprietary | GPL-3.0 is AGPL-compatible (section 13); off by default |
 | VST 3 SDK | M3+ | MIT (since 3.8, Oct 2025) | Notice |
 | Models, IRs, drum samples | M3+ | Per asset | AGPL-compatible licence and training-data provenance required |

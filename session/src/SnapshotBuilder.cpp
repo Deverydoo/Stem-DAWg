@@ -4,6 +4,7 @@
 #include <daw/session/SnapshotBuilder.h>
 
 #include <daw/core/Hash.h>
+#include <daw/dsp/SpectralDenoiser.h>
 
 #include <algorithm>
 #include <numbers>
@@ -21,9 +22,61 @@ ChannelGains trackChannelGains(const ProjectModel& model, const Track& track) no
     return {static_cast<float>(gain * (pan > 0.0 ? opposite : 1.0)), static_cast<float>(gain * (pan < 0.0 ? opposite : 1.0))};
 }
 
+std::uint64_t trackPlaybackKey(const TrackId& track) noexcept
+{
+    return fnv1a64(track.str()) | 1u; // never 0
+}
+
+CleanupParams cleanupParams(const TrackCleanup& cleanup) noexcept
+{
+    CleanupParams p;
+    if (!cleanup.active())
+        return p;
+    TrackCleanup c = cleanup;
+    c.clamp();
+    p.dcRemoval = c.dcRemoval;
+    p.highPass = c.highPass.enabled;
+    p.highPassHz = static_cast<float>(c.highPass.frequencyHz);
+    p.highPassOrder = c.highPass.slopeDbPerOctave / 6;
+    p.expander = c.expander.enabled;
+    p.thresholdDb = static_cast<float>(c.expander.thresholdDb);
+    p.ratio = static_cast<float>(c.expander.ratio);
+    p.rangeDb = static_cast<float>(c.expander.rangeDb);
+    p.releaseMs = static_cast<float>(c.expander.releaseMs);
+    p.hum = c.hum.enabled;
+    p.humHz = static_cast<float>(c.hum.frequencyHz);
+    p.humHarmonics = c.hum.harmonics;
+    p.denoise = c.denoise.enabled;
+    p.denoiseReductionDb = static_cast<float>(c.denoise.reductionDb);
+    p.denoiseSensitivityDb = static_cast<float>(c.denoise.sensitivityDb);
+    return p;
+}
+
+std::vector<float> noiseProfileForEngine(const NoiseProfile& profile, double engineRate)
+{
+    if (profile.empty() || !(engineRate > 0.0))
+        return {};
+    constexpr int kSize = SpectralDenoiser::kFftSize;
+    // Noise power per bin grows with the frame length (same window shape).
+    const double sizeDb = 10.0 * std::log10(static_cast<double>(kSize) / profile.fftSize);
+    const double profileBinHz = profile.sampleRate / profile.fftSize;
+    const auto last = static_cast<double>(profile.powerDb.size() - 1);
+    std::vector<float> power(SpectralDenoiser::kBins);
+    for (int k = 0; k < SpectralDenoiser::kBins; ++k) {
+        const double hz = k * engineRate / kSize;
+        const double x = std::min(hz / profileBinHz, last);
+        const auto i = static_cast<std::size_t>(x);
+        const std::size_t j = std::min(i + 1, profile.powerDb.size() - 1);
+        const double frac = x - static_cast<double>(i);
+        const double db = profile.powerDb[i] + (profile.powerDb[j] - profile.powerDb[i]) * frac + sizeDb;
+        power[static_cast<std::size_t>(k)] = static_cast<float>(std::pow(10.0, db / 10.0));
+    }
+    return power;
+}
+
 std::unique_ptr<PlaybackSnapshot> buildPlaybackSnapshot(const ProjectModel& model, const MediaPool& pool,
                                                         double engineSampleRate, std::uint64_t version,
-                                                        SnapshotBuildReport* report)
+                                                        SnapshotBuildReport* report, const SnapshotBuildOptions& options)
 {
     const TimeMapper map{model.sampleRate, engineSampleRate};
     auto snapshot = std::make_unique<PlaybackSnapshot>();
@@ -39,7 +92,22 @@ std::unique_ptr<PlaybackSnapshot> buildPlaybackSnapshot(const ProjectModel& mode
         const ChannelGains gains = trackChannelGains(model, track);
         playback.gainLeft = gains.left * master;
         playback.gainRight = gains.right * master;
-        playback.key = fnv1a64(track.id.str()) | 1u; // never 0
+        playback.key = trackPlaybackKey(track.id);
+        if (!options.bypassCleanup) {
+            playback.cleanup = cleanupParams(track.cleanup);
+            if (playback.cleanup.denoise && !track.cleanup.denoise.profile.empty()) {
+                auto power = std::make_shared<const std::vector<float>>(
+                    noiseProfileForEngine(track.cleanup.denoise.profile, engineSampleRate));
+                playback.cleanup.noiseProfile = power->data();
+                snapshot->noiseProfiles.push_back(std::move(power));
+            }
+        }
+        if (options.listenRemoved) {
+            if (playback.cleanup.active())
+                playback.cleanup.listenRemoved = true;
+            else
+                playback.gainLeft = playback.gainRight = 0.0f; // nothing removed: nothing to hear
+        }
 
         for (const Clip& clip : track.clips) {
             const auto loaded = pool.get(clip.media);

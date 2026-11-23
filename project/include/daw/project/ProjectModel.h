@@ -14,6 +14,7 @@
 #include <daw/project/Metadata.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,16 @@ namespace daw {
 enum class MediaStorage {
     Copied,     // file lives inside the project (path is project-relative)
     Referenced, // file lives elsewhere (path is absolute)
+};
+
+/// How a processed media file was made from another (non-destructive
+/// processing: the source stays in the project, so it can be restored).
+struct MediaDerivation {
+    MediaId source;         // the media this was made from
+    std::string process;    // e.g. "voice-denoise"
+    double amountDb = 0.0;  // the process's strength (voice denoise: its reduction limit)
+
+    friend bool operator==(const MediaDerivation&, const MediaDerivation&) = default;
 };
 
 struct MediaRef {
@@ -33,6 +44,7 @@ struct MediaRef {
     int numChannels = 0;
     std::int64_t numFrames = 0; // native frames
     std::uint64_t sourceKey = 0;
+    std::optional<MediaDerivation> derivation; // set for processed copies
 
     friend bool operator==(const MediaRef&, const MediaRef&) = default;
 };
@@ -49,6 +61,86 @@ struct Clip {
     friend bool operator==(const Clip&, const Clip&) = default;
 };
 
+/// High-pass filter of a track's clean-up chain (Butterworth).
+struct HighPassSettings {
+    static constexpr double kMinHz = 20.0;
+    static constexpr double kMaxHz = 1000.0;
+
+    bool enabled = false;
+    double frequencyHz = 120.0; // -3 dB point
+    int slopeDbPerOctave = 24;  // 12, 24 or 48
+
+    friend bool operator==(const HighPassSettings&, const HighPassSettings&) = default;
+};
+
+/// Downward expander of a track's clean-up chain: below the threshold the
+/// level drops `ratio` times faster, by at most `rangeDb`. Used to push the
+/// noise bed between notes down without touching the notes.
+struct ExpanderSettings {
+    bool enabled = false;
+    double thresholdDb = -50.0; // RMS level (mean of both channels' power), dBFS
+    double ratio = 4.0;         // 1 .. 20
+    double rangeDb = 24.0;      // maximum attenuation, 0 .. 90
+    double releaseMs = 80.0;    // closing time after the hold, 10 .. 2000
+
+    friend bool operator==(const ExpanderSettings&, const ExpanderSettings&) = default;
+};
+
+/// Notches at the mains frequency and its harmonics.
+struct HumSettings {
+    bool enabled = false;
+    double frequencyHz = 50.0; // 50 (Europe, most of the world) or 60 (the Americas); 45 .. 65
+    int harmonics = 4;         // notches at f, 2f, ... ; 1 .. 8
+
+    friend bool operator==(const HumSettings&, const HumSettings&) = default;
+};
+
+/// The noise spectrum a denoiser removes, measured on the quietest parts of a
+/// track: mean power per FFT bin in dB (bin k is k * sampleRate / fftSize Hz).
+struct NoiseProfile {
+    double sampleRate = 0.0;
+    int fftSize = 0;
+    double seconds = 0.0;       // how much audio it was learned from
+    bool fromSelection = false; // learned from a selected region, not the quietest frames
+    std::vector<float> powerDb; // fftSize / 2 + 1 values
+
+    bool empty() const noexcept { return powerDb.empty() || fftSize <= 0 || !(sampleRate > 0.0); }
+    friend bool operator==(const NoiseProfile&, const NoiseProfile&) = default;
+};
+
+/// Learned-profile spectral noise reduction.
+struct DenoiseSettings {
+    bool enabled = false;
+    double reductionDb = 12.0;  // maximum attenuation, 0 .. 40
+    double sensitivityDb = 0.0; // scales the profile: + removes more, - keeps more; -10 .. +10
+    NoiseProfile profile;       // nothing is removed until a profile is learned
+
+    friend bool operator==(const DenoiseSettings&, const DenoiseSettings&) = default;
+};
+
+/// Non-destructive per-track clean-up, applied before the fader in this order:
+/// DC removal, high-pass, hum removal, noise reduction, expander.
+struct TrackCleanup {
+    bool bypassed = false; // keeps the settings but plays the track unprocessed
+    bool dcRemoval = false;
+    HighPassSettings highPass;
+    HumSettings hum;
+    DenoiseSettings denoise;
+    ExpanderSettings expander;
+
+    /// True when any stage is switched on (regardless of bypass).
+    bool hasStages() const noexcept
+    {
+        return dcRemoval || highPass.enabled || hum.enabled || denoise.enabled || expander.enabled;
+    }
+    /// True when the chain changes the sound.
+    bool active() const noexcept { return !bypassed && hasStages(); }
+    /// Limits every value to its documented range (slope snaps to 12/24/48).
+    void clamp() noexcept;
+
+    friend bool operator==(const TrackCleanup&, const TrackCleanup&) = default;
+};
+
 struct Track {
     TrackId id;
     std::string name;
@@ -56,6 +148,7 @@ struct Track {
     double pan = 0.0;      // -1 (left) .. 0 (centre) .. +1 (right), balance law, unity at centre
     bool muted = false;
     bool soloed = false;   // solo-in-place; mute wins over solo
+    TrackCleanup cleanup;
     std::vector<Clip> clips;
 
     friend bool operator==(const Track&, const Track&) = default;

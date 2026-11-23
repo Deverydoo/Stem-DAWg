@@ -312,3 +312,38 @@ TEST_CASE("A new track starts at its target gain; unrelated tracks keep ramping 
     for (float s : out.left)
         REQUIRE(s == 0.25f);
 }
+
+TEST_CASE("The engine meters the loudness of what it plays; a seek restarts the measurement", "[engine][loudness]")
+{
+    AudioEngine engine;
+    engine.prepare({48000.0, 512, 2});
+    // 1 kHz stereo sine at -23 dBFS reads -23 LUFS (EBU Tech 3341, test 1).
+    const auto tone = makeSine(1000.0, 6.0, 48000.0, 2, static_cast<float>(std::pow(10.0, -23.0 / 20.0)));
+    engine.publishSnapshot(singleClipSnapshot(tone, 0, 0, tone->numFrames(), 1));
+
+    renderBlocks(engine, 512 * 100, 512); // stopped: nothing is measured
+    REQUIRE(engine.loudness().integratedLufs == kLoudnessFloor);
+
+    engine.play();
+    renderBlocks(engine, 512 * 500, 512); // 5.3 s
+    const auto playing = engine.loudness();
+    REQUIRE(std::abs(playing.integratedLufs + 23.0) < 0.1);
+    REQUIRE(std::abs(playing.momentaryLufs + 23.0) < 0.1);
+    REQUIRE(std::abs(playing.truePeakDbtp + 23.0) < 0.2);
+    REQUIRE(playing.seconds > 5.0);
+
+    engine.stop(); // pause keeps the measurement
+    renderBlocks(engine, 512 * 10, 512);
+    REQUIRE(engine.loudness().integratedLufs == playing.integratedLufs);
+
+    engine.seek(0);
+    renderBlocks(engine, 512, 512);
+    REQUIRE(engine.loudness().integratedLufs == kLoudnessFloor);
+    REQUIRE(engine.loudness().seconds == 0.0);
+
+    engine.play();
+    renderBlocks(engine, 512 * 200, 512);
+    REQUIRE(engine.loudness().integratedLufs > -24.0);
+    engine.resetLoudness();
+    REQUIRE(engine.loudness().integratedLufs == kLoudnessFloor);
+}

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Chaos Rift Entertainment, LLC and the Stem DAWg contributors
 
 #include <daw/ai/Analyzers.h>
-#include <daw/ai/Fft.h>
+#include <daw/dsp/Fft.h>
 
 #include "DspUtil.h"
 

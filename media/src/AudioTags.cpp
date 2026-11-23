@@ -426,15 +426,21 @@ void readId3(std::string_view tag, AudioTags& tags)
 
 Result<AudioTags> readWavTags(std::string_view b)
 {
-    if (b.size() < 12 || b.substr(0, 4) != "RIFF" || b.substr(8, 4) != "WAVE")
+    const bool rf64 = b.size() >= 12 && b.substr(0, 4) == "RF64";
+    if (b.size() < 12 || (b.substr(0, 4) != "RIFF" && !rf64) || b.substr(8, 4) != "WAVE")
         return makeError(ErrorCode::Corrupt, "not a RIFF/WAVE file");
     AudioTags info;
     AudioTags id3;
     bool haveId3 = false;
+    std::uint64_t ds64Data = 0; // RF64: the real size of a "data" chunk whose 32-bit size is 0xFFFFFFFF
     for (std::size_t pos = 12; pos + 8 <= b.size();) {
         const std::string_view id = b.substr(pos, 4);
-        const std::uint32_t size = getU32le(b, pos + 4);
-        const std::size_t available = std::min<std::size_t>(size, b.size() - pos - 8);
+        std::uint64_t size = getU32le(b, pos + 4);
+        if (rf64 && id == "ds64" && pos + 8 + 16 <= b.size())
+            ds64Data = static_cast<std::uint64_t>(getU32le(b, pos + 16)) | (static_cast<std::uint64_t>(getU32le(b, pos + 20)) << 32);
+        if (rf64 && id == "data" && size == 0xFFFFFFFFu)
+            size = ds64Data;
+        const std::size_t available = static_cast<std::size_t>(std::min<std::uint64_t>(size, b.size() - pos - 8));
         const std::string_view body = b.substr(pos + 8, available);
         if (id == "LIST" && body.substr(0, 4) == "INFO")
             readInfo(body, info);
@@ -442,7 +448,10 @@ Result<AudioTags> readWavTags(std::string_view b)
             readId3(body, id3);
             haveId3 = true;
         }
-        pos += 8 + static_cast<std::size_t>(size) + (size & 1);
+        const std::uint64_t next = static_cast<std::uint64_t>(pos) + 8 + size + (size & 1);
+        if (next > b.size())
+            break;
+        pos = static_cast<std::size_t>(next);
     }
     if (!haveId3)
         return info;

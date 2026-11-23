@@ -5,6 +5,7 @@
 
 #include "HelpText.h"
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QHelpEvent>
 #include <QPainter>
@@ -25,6 +26,8 @@ const QColor kPlayhead(0xff, 0x5a, 0x1f);
 const QColor kMarker(0xf2, 0xd0, 0x3b, 150);
 const QColor kGrid(0x33, 0x35, 0x3b);
 const QColor kDefaultTrack(0xd9, 0x8a, 0x4a);
+const QColor kSelectionFill(0x9f, 0xc4, 0xff, 38);
+const QColor kSelectionEdge(0x9f, 0xc4, 0xff, 170);
 
 QString formatTime(double seconds, double step)
 {
@@ -50,7 +53,9 @@ bool WaveformView::event(QEvent* event)
         auto* help = static_cast<QHelpEvent*>(event);
         if (help->pos().y() < kRulerHeight) {
             QToolTip::showText(help->globalPos(),
-                               helpTip(tr("Timeline"), tr("Time in minutes:seconds. Click or drag anywhere to move the playhead.\n"
+                               helpTip(tr("Timeline"), tr("Time in minutes:seconds. Click or drag here to move the playhead.\n"
+                                                          "Drag across the tracks to select a stretch of time (Shift+click extends it,\n"
+                                                          "Esc clears it): Learn Noise and Detect then measure only the selection.\n"
                                                           "Ctrl+wheel zooms, Shift+wheel scrolls sideways, wheel scrolls tracks.")),
                                this);
         } else {
@@ -77,8 +82,10 @@ void WaveformView::setLanes(std::vector<WaveformLane> lanes)
         zoomToFit();
         fittedOnce_ = true;
     }
-    if (lanes_.empty())
+    if (lanes_.empty()) {
         fittedOnce_ = false;
+        clearSelection(); // the project closed
+    }
     updateVerticalLayout();
     update();
 }
@@ -218,6 +225,7 @@ void WaveformView::paintEvent(QPaintEvent*)
 
     // Analysis markers (transient candidates).
     const int lanesBottom = std::min(height(), kRulerHeight + static_cast<int>(lanes_.size()) * lane - scrollY_);
+    drawSelection(painter, lanesBottom);
     painter.setPen(QPen(kMarker, 1));
     for (std::int64_t marker : markers_) {
         const double x = xForFrame(static_cast<double>(marker));
@@ -246,6 +254,12 @@ void WaveformView::paintEvent(QPaintEvent*)
     }
 
     drawRuler(painter);
+    if (hasSelection()) {
+        const double x0 = std::max(0.0, xForFrame(static_cast<double>(selectionStart_)));
+        const double x1 = std::min<double>(width(), xForFrame(static_cast<double>(selectionEnd_)));
+        if (x1 > x0)
+            painter.fillRect(QRectF(x0, kRulerHeight - 6, x1 - x0, 5), kSelectionEdge);
+    }
 
     const double playheadX = xForFrame(static_cast<double>(playhead_));
     if (playheadX >= 0.0 && playheadX <= width()) {
@@ -353,16 +367,114 @@ void WaveformView::seekToX(double x)
     Q_EMIT seekRequested(frame);
 }
 
+void WaveformView::drawSelection(QPainter& painter, int lanesBottom)
+{
+    if (!hasSelection())
+        return;
+    const double x0 = xForFrame(static_cast<double>(selectionStart_));
+    const double x1 = xForFrame(static_cast<double>(selectionEnd_));
+    if (x1 < 0.0 || x0 > width())
+        return;
+    const double bottom = lanes_.empty() ? height() : lanesBottom;
+    painter.fillRect(QRectF(x0, kRulerHeight, x1 - x0, bottom - kRulerHeight), kSelectionFill);
+    painter.setPen(QPen(kSelectionEdge, 1));
+    painter.drawLine(QPointF(x0, kRulerHeight), QPointF(x0, bottom));
+    painter.drawLine(QPointF(x1, kRulerHeight), QPointF(x1, bottom));
+}
+
+void WaveformView::setSelection(std::int64_t a, std::int64_t b)
+{
+    const std::int64_t start = std::min(a, b), end = std::max(a, b);
+    if (start == selectionStart_ && end == selectionEnd_)
+        return;
+    selectionStart_ = start;
+    selectionEnd_ = end;
+    update();
+    Q_EMIT selectionChanged(selectionStart_, selectionEnd_);
+}
+
+void WaveformView::clearSelection()
+{
+    if (!hasSelection())
+        return;
+    setSelection(0, 0);
+}
+
 void WaveformView::mousePressEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::LeftButton)
-        seekToX(event->position().x());
+    if (event->button() != Qt::LeftButton)
+        return;
+    const QPointF pos = event->position();
+    pressX_ = pos.x();
+    if (pos.y() < kRulerHeight) {
+        drag_ = Drag::Scrub;
+        seekToX(pos.x());
+        return;
+    }
+    const int lane = laneHeight() > 0 ? static_cast<int>((pos.y() - kRulerHeight + scrollY_) / laneHeight()) : -1;
+    if (lane >= 0 && lane < static_cast<int>(lanes_.size()))
+        Q_EMIT laneClicked(lane);
+    const std::int64_t frame = frameForX(pos.x());
+    if (event->modifiers() & Qt::ShiftModifier) {
+        // Extend: keep the selection end farther from the click (or the playhead).
+        if (hasSelection())
+            dragAnchor_ = frame - selectionStart_ < selectionEnd_ - frame ? selectionEnd_ : selectionStart_;
+        else
+            dragAnchor_ = playhead_;
+        drag_ = Drag::Select;
+        setSelection(dragAnchor_, frame);
+        return;
+    }
+    // A click seeks (on release); a drag past a few pixels selects.
+    dragAnchor_ = frame;
+    drag_ = Drag::Pending;
 }
 
 void WaveformView::mouseMoveEvent(QMouseEvent* event)
 {
-    if (event->buttons() & Qt::LeftButton)
-        seekToX(event->position().x());
+    if (!(event->buttons() & Qt::LeftButton))
+        return;
+    const double x = event->position().x();
+    switch (drag_) {
+    case Drag::Scrub:
+        seekToX(x);
+        break;
+    case Drag::Pending:
+        if (std::abs(x - pressX_) < 4.0)
+            break;
+        drag_ = Drag::Select;
+        [[fallthrough]];
+    case Drag::Select:
+        setSelection(dragAnchor_, frameForX(x));
+        break;
+    case Drag::None:
+        break;
+    }
+}
+
+void WaveformView::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() != Qt::LeftButton)
+        return;
+    if (drag_ == Drag::Pending) {
+        clearSelection();
+        seekToX(pressX_);
+    } else if (drag_ == Drag::Select && hasSelection()) {
+        playhead_ = selectionStart_; // play from the start of the selection
+        update();
+        Q_EMIT seekRequested(selectionStart_);
+    }
+    drag_ = Drag::None;
+}
+
+void WaveformView::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Escape && hasSelection()) {
+        clearSelection();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void WaveformView::wheelEvent(QWheelEvent* event)

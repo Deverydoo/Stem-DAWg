@@ -28,6 +28,8 @@ struct TrackHeaderState {
     bool muted = false;
     bool soloed = false;
     bool audible = true; // false when muted or silenced by another track's solo
+    enum class Cleanup { Off, On, Bypassed } cleanup = Cleanup::Off;
+    QString cleanupSummary; // e.g. "HP 120 Hz 24 dB/oct, expander -44 dB"
 };
 
 /// Horizontal fader in dB with a fader taper (-inf .. +6 dB), a detent at
@@ -103,10 +105,16 @@ Q_SIGNALS:
     void gainChanged(double gainDb);
     void panChanged(double pan);
     void muteToggled(bool muted);
-    void soloToggled(bool soloed);
+    /// `additive`: Ctrl was held, keep the other soloed tracks.
+    void soloToggled(bool soloed, bool additive);
+    void cleanupRequested();
+    void renameRequested();
+    void deleteRequested();
 
 protected:
     void paintEvent(class QPaintEvent* event) override;
+    void contextMenuEvent(class QContextMenuEvent* event) override;
+    void mouseDoubleClickEvent(class QMouseEvent* event) override;
     void resizeEvent(class QResizeEvent* event) override;
 
 private:
@@ -117,6 +125,7 @@ private:
     QLabel* name_ = nullptr;
     QToolButton* mute_ = nullptr;
     QToolButton* solo_ = nullptr;
+    QToolButton* cleanup_ = nullptr;
     VolumeFader* fader_ = nullptr;
     QLabel* gainLabel_ = nullptr;
     PanKnob* pan_ = nullptr;
@@ -139,7 +148,10 @@ Q_SIGNALS:
     void gainChanged(const QString& trackId, double gainDb);
     void panChanged(const QString& trackId, double pan);
     void muteToggled(const QString& trackId, bool muted);
-    void soloToggled(const QString& trackId, bool soloed);
+    void soloToggled(const QString& trackId, bool soloed, bool additive);
+    void cleanupRequested(const QString& trackId);
+    void renameRequested(const QString& trackId);
+    void deleteRequested(const QString& trackId);
     void scrollRequested(int angleDelta);
 
 protected:

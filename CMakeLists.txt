@@ -54,15 +54,17 @@ include(DawHelpers)
 # docs/milestone-1/M1-Technical-Specification.md section 3.2 and enforced here:
 #
 #   core      <- std, nlohmann_json              (no JUCE, no Qt)
+#   dsp       <- core                            (no JUCE, no Qt)
 #   media     <- core, JUCE (decode only)        (no Qt)
-#   engine    <- core, JUCE (devices only)       (no Qt)
+#   engine    <- core, dsp, JUCE (devices only)  (no Qt)
 #   project   <- core                            (no JUCE, no Qt)
 #   session   <- core, media, engine, project    (no Qt)
-#   ai        <- core, ONNX Runtime              (no JUCE, no Qt)
+#   ai        <- core, dsp, ONNX Runtime         (no JUCE, no Qt)
 #   apps/*    <- everything + Qt
 # ---------------------------------------------------------------------------
 add_subdirectory(third_party/juce_static)
 add_subdirectory(core)
+add_subdirectory(dsp)
 add_subdirectory(media)
 add_subdirectory(engine)
 add_subdirectory(project)
@@ -72,6 +74,8 @@ add_subdirectory(ai)
 if(DAW_BUILD_APP)
     add_subdirectory(apps/desktop)
 endif()
+
+add_subdirectory(tools)
 
 if(DAW_BUILD_TESTS)
     enable_testing()

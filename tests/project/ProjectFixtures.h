@@ -43,6 +43,14 @@ inline ProjectModel makeRichProject()
     t1.gainDb = -3.0;
     t1.pan = -0.35;
     t1.muted = true;
+    t1.cleanup.dcRemoval = true;
+    t1.cleanup.highPass = {true, 85.5, 48};
+    t1.cleanup.expander = {true, -47.0, 3.0, 30.0, 220.0};
+    t1.cleanup.hum = {true, 60.0, 3};
+    t1.cleanup.denoise.enabled = true;
+    t1.cleanup.denoise.reductionDb = 15.0;
+    t1.cleanup.denoise.sensitivityDb = 2.5;
+    t1.cleanup.denoise.profile = {44100.0, 16, 1.5, true, {-60.25f, -61.5f, -62.75f, -63.0f, -64.5f, -65.25f, -66.0f, -67.5f, -70.0f}};
     t1.clips.push_back(Clip{ClipId::generate(), "drums A", drums.id, 0, 0, 441000, 0.0});
     t1.clips.push_back(Clip{ClipId::generate(), "drums B", drums.id, 882000, 44100, 220500, -6.0});
 

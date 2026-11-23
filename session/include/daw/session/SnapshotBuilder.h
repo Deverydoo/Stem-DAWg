@@ -48,12 +48,30 @@ struct ChannelGains {
 /// and vice versa. Mono media feeds both sides before the balance is applied.
 ChannelGains trackChannelGains(const ProjectModel& model, const Track& track) noexcept;
 
+/// The engine's identity for a track (PlaybackSnapshot::TrackPlayback::key).
+std::uint64_t trackPlaybackKey(const TrackId& track) noexcept;
+
+/// The engine parameters for a track's clean-up chain (inactive when the
+/// chain is bypassed or has no stage switched on). The noise profile pointer is
+/// left empty: see noiseProfileForEngine.
+CleanupParams cleanupParams(const TrackCleanup& cleanup) noexcept;
+
+/// A noise profile resampled to the engine's denoiser bins (linear power,
+/// SpectralDenoiser::kBins values at `engineRate`). Empty for an empty profile.
+std::vector<float> noiseProfileForEngine(const NoiseProfile& profile, double engineRate);
+
 struct SnapshotBuildReport {
     std::vector<MediaId> missingMedia; // referenced but not loaded at the engine rate
 };
 
+struct SnapshotBuildOptions {
+    bool bypassCleanup = false; // play every track without its clean-up chain (A/B listening)
+    bool listenRemoved = false; // play only what the clean-up chains remove (tracks without one are silent)
+};
+
 std::unique_ptr<PlaybackSnapshot> buildPlaybackSnapshot(const ProjectModel& model, const MediaPool& pool,
                                                         double engineSampleRate, std::uint64_t version,
-                                                        SnapshotBuildReport* report = nullptr);
+                                                        SnapshotBuildReport* report = nullptr,
+                                                        const SnapshotBuildOptions& options = {});
 
 } // namespace daw

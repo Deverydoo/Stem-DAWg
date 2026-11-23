@@ -14,6 +14,7 @@
 #include <daw/core/AudioAsset.h>
 #include <daw/core/CancellationToken.h>
 #include <daw/core/Result.h>
+#include <daw/dsp/LoudnessMeter.h>
 #include <daw/media/AudioTags.h>
 #include <daw/media/WavWriter.h>
 #include <daw/project/Metadata.h>
@@ -23,6 +24,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 
 namespace daw {
 
@@ -36,6 +38,7 @@ struct RenderReport {
     double sampleRate = 0.0;
     double peakDbfs = -144.0;        // sample peak of the mix before any conversion
     std::int64_t clippedSamples = 0; // samples beyond +-1.0 (they clip in PCM formats)
+    LoudnessReading loudness;        // integrated loudness, range and true peak of the mix
     double renderSeconds = 0.0;
 };
 
@@ -43,6 +46,12 @@ struct RenderedMix {
     AudioAssetPtr audio; // stereo, project rate
     RenderReport report;
 };
+
+/// The media used by the project's clips at `sampleRate`: originals that
+/// already match, high-quality renditions of the rest. Fails if any media is
+/// not loaded in `pool`.
+Result<std::unique_ptr<MediaPool>> prepareMediaAtRate(const ProjectModel& model, const MediaPool& pool, double sampleRate,
+                                                      const CancellationToken& cancel = {});
 
 /// Renders the whole project (0 .. end of the last clip). Every referenced
 /// media item must be loaded in `pool`.

@@ -44,18 +44,18 @@ Models run locally via ONNX Runtime (CPU, with DirectML GPU acceleration planned
 
 Milestone 1, the engineering foundation, is done: the engine, projects, waveforms, track mixer, export with metadata, and the analysis and ONNX framework. See [milestone-1](milestone-1/).
 
-### M2: Stem triage and clean-up basics
-- **Stem report** (automatic after import): level share, active time, noise floor, low-end content, bleed against every other stem, with plain-language advice ("Other is mostly residue: consider muting"; "Percussion doubles the kick below 60 Hz").
-- **Per-stem clean-up chain, non-destructive:** high-pass / low-end ownership, downward expander with its threshold set from the measured noise floor, DC removal.
-- **Loudness metering:** integrated, short-term and momentary LUFS (ITU-R BS.1770-4), true peak, LRA; shown live and in the export report.
-- Delete and rename tracks; undo/redo (command pattern, already prepared by the model design).
-- Declick on stop/seek; RF64 export for renders over 4 GB.
+### M2: Stem triage and clean-up basics ✅ done
+- **Stem report** (automatic after import) ✅ **done:** level share, loudness, active time, noise floor, low-end content, stereo, and per-band correlation against every other stem, with plain-language advice ("Other holds what the separation could not assign: mute it and listen"; "Percussion is mostly low end under Drums: it probably carries a second kick"). Also available as the `stem-report` command-line tool. Design: [M2-Stem-Triage.md](milestone-2/M2-Stem-Triage.md).
+- **Loudness metering** ✅ **done:** integrated, short-term and momentary LUFS (ITU-R BS.1770-4), true peak, LRA; live in the transport bar, in the stem report and in the export summary.
+- **Per-stem clean-up chain, non-destructive** ✅ **done:** DC removal, Butterworth high-pass (low-end ownership) and a lookahead downward expander per track, live and saved with the project. Stem report advice carries the fixes (expander threshold from the measured noise bed, high-pass for doubled low end), applied with one click; Bypass Clean-up (Ctrl+B) compares with the original. See [M2-Stem-Triage.md](milestone-2/M2-Stem-Triage.md#3-clean-up-chain-dspcleanupchain).
+- **Delete and rename tracks; undo/redo** ✅ **done:** every edit is undoable (model snapshots, with gestures such as a fader drag or a batch import merged into one step). See [M2-Editing-and-Playback.md](milestone-2/M2-Editing-and-Playback.md).
+- **Declick on stop/seek; RF64 export for renders over 4 GB** ✅ **done.**
 
 ### M3: Noise removal
-- **Learned-profile spectral denoise** for stationary noise (fans, AC, hiss): the profile comes from quiet regions (auto-detected, or user-selected), applied as a smoothed Wiener/spectral-subtraction gain with protection against musical noise.
-- **Hum removal:** 50/60 Hz fundamentals and harmonics with adaptive notches.
-- **Voice denoise model** (ONNX): evaluate DeepFilterNet3 (MIT/Apache-2.0, 48 kHz full-band) and RNNoise (BSD) for spoken and sung home recordings.
-- **Listen to what's removed:** a delta/difference monitor and A/B against the original, so cleaning never damages the music unnoticed.
+- **Learned-profile spectral denoise** ✅ **done** for stationary noise (fans, AC, hiss): the profile comes from the quietest frames, or from a stretch of noise selected on the timeline, applied as a decision-directed Wiener gain that avoids musical noise. See [M3-Noise-Removal.md](milestone-3/M3-Noise-Removal.md).
+- **Hum removal** ✅ **done:** 50/60 Hz fundamentals and harmonics with narrow notches, detected automatically (frequency-checked, so bass notes near 50 Hz are not mistaken for hum).
+- **Voice denoise model** ✅ **done** (ONNX, DeepFilterNet3, MIT/Apache-2.0, 48 kHz full-band): renders a cleaned copy of a spoken recording, removing noise that changes as well as steady noise; the original stays in the project. Measured: excellent on speech, but it takes a wet AI singing voice for noise, so the app warns when the voice drops and steers singing to the spectral denoiser. A singing-capable model remains an open item.
+- **Listen to what's removed** ✅ **done:** Listen to Removed (Ctrl+Shift+B) plays exactly what the clean-up takes away; Bypass Clean-up (Ctrl+B) is the A/B.
 
 ### M4: AI-artifact repair
 - **Cross-stem bleed suppression:** estimate each stem's leakage into the others and mask it.
@@ -70,6 +70,7 @@ Milestone 1, the engineering foundation, is done: the engine, projects, waveform
 - Export presets per destination (streaming, Bandcamp, club, CD).
 
 ### M6: Audio to MIDI
+- **MIDI playback** ✅ **done early:** `.mid` files import as tracks rendered through a General MIDI SoundFont (FluidR3_GM, downloaded in the app), so Suno's own MIDI (advanced stem split) can be compared with, layered on, or used to replace the audio stems. See [MIDI-Playback.md](milestone-2/MIDI-Playback.md).
 - **Drums first:** onsets (existing) → hit classification (kick / snare / clap / hats / toms from band-energy features, then an ML drum-transcription model) → quantise to a detected tempo grid → General MIDI drum file (`.mid`). This lets you rebuild a Suno beat with real drum samples.
 - **Tempo and grid detection** (also improves the bar.beat display).
 - **Pitched lines:** bass and synth via Spotify's Basic Pitch (Apache-2.0, ONNX-exportable), then polyphonic models for keys.

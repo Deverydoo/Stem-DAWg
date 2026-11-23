@@ -7,14 +7,15 @@ daw_add_module(ai
         src/ModelRegistry.cpp
         src/BuiltinModels.cpp
         src/OnnxBackend.cpp
-        src/Fft.cpp
         src/LevelAnalyzer.cpp
         src/TransientAnalyzer.cpp
         src/SpectralAnalyzer.cpp
         src/InferenceProbeAnalyzer.cpp
+        src/VoiceDenoiser.cpp
         src/Analyzers.cpp
     PUBLIC_DEPS
-        daw::core)
+        daw::core
+        daw::dsp)
 
 if(DAW_ENABLE_ONNX)
     target_link_libraries(daw_ai PRIVATE onnxruntime::onnxruntime)

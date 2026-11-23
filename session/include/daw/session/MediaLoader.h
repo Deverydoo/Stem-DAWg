@@ -20,6 +20,8 @@ struct MediaLoadOptions {
     double engineSampleRate = 0.0; // 0 = keep native rate (no rendition)
     bool usePeakCache = true;
     DecodeOptions decode;
+    /// SoundFont for MIDI media (rendered at the media's recorded sample rate).
+    std::filesystem::path soundFont;
 };
 
 Result<LoadedMedia> loadMedia(const std::filesystem::path& projectRoot, const MediaRef& media,

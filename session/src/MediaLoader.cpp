@@ -5,6 +5,7 @@
 
 #include <daw/core/Files.h>
 #include <daw/core/Logger.h>
+#include <daw/media/Midi.h>
 #include <daw/media/PeakCache.h>
 #include <daw/media/Resampler.h>
 #include <daw/project/ProjectStore.h>
@@ -33,7 +34,22 @@ Result<LoadedMedia> loadMedia(const fs::path& projectRoot, const MediaRef& media
                               const CancellationToken& cancel)
 {
     const fs::path file = ProjectStore::resolveMediaPath(projectRoot, media);
-    auto decoded = decodeAudioFile(file, options.decode, cancel);
+    const bool midi = isMidiFile(file);
+    Result<AudioAssetPtr> decoded = makeError(ErrorCode::Unknown, "not decoded");
+    if (midi) {
+        // MIDI is rendered through the SoundFont at the rate recorded on import,
+        // so the clip lengths in the project stay exact.
+        if (options.soundFont.empty())
+            return makeError(ErrorCode::Unavailable, "MIDI needs a SoundFont: choose or download one in Settings > SoundFont");
+        auto font = loadSoundFont(options.soundFont);
+        if (!font)
+            return font.error();
+        MidiRenderOptions render;
+        render.sampleRate = media.sampleRate > 0.0 ? media.sampleRate : 48000.0;
+        decoded = renderMidiFile(file, **font, render, cancel);
+    } else {
+        decoded = decodeAudioFile(file, options.decode, cancel);
+    }
     if (!decoded)
         return decoded.error();
 
@@ -41,10 +57,12 @@ Result<LoadedMedia> loadMedia(const fs::path& projectRoot, const MediaRef& media
     loaded.id = media.id;
     loaded.original = *decoded;
 
-    // Peaks: reuse the cache when it still matches the media file.
+    // Peaks: reuse the cache when it still matches the media file. MIDI peaks
+    // depend on the SoundFont as well, so they are always rebuilt.
     const fs::path cachePath = ProjectStore::peakCachePath(projectRoot, media.id);
     auto key = computeSourceKey(file);
-    if (options.usePeakCache && key) {
+    const bool cachePeaks = options.usePeakCache && !midi;
+    if (cachePeaks && key) {
         auto cached = readPeakCache(cachePath, *key);
         if (cached) {
             loaded.peaks = std::make_shared<const PeakPyramid>(std::move(*cached));
@@ -59,7 +77,7 @@ Result<LoadedMedia> loadMedia(const fs::path& projectRoot, const MediaRef& media
         if (!built)
             return built.error();
         loaded.peaks = std::make_shared<const PeakPyramid>(std::move(*built));
-        if (options.usePeakCache && key) {
+        if (cachePeaks && key) {
             if (Status written = writePeakCache(cachePath, *loaded.peaks, *key); !written)
                 logging::warn("media", "peak cache write failed", {{"error", written.error().describe()}});
         }

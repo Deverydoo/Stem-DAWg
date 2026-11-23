@@ -12,9 +12,13 @@
 #include <daw/session/SnapshotBuilder.h>
 
 #include "TempDir.h"
+#include "TestMidi.h"
 #include "TestSignals.h"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <cmath>
 
 using namespace daw;
 using namespace daw::test;
@@ -153,6 +157,42 @@ TEST_CASE("Transients are found in a decoded 16-bit stem exactly as the app runs
         REQUIRE(std::abs(static_cast<double>(frames[i]) / 44100.0 - 0.5 * static_cast<double>(i)) < 0.003);
 }
 
+TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "[session][snapshot][cleanup]")
+{
+    ProjectModel model = makeEmptyProject("cleanup");
+    MediaRef media{MediaId::generate(), "m", "x.wav", MediaStorage::Copied, 48000.0, 2, 48000, 1};
+    addMediaAsNewTrack(model, media, 0);
+    addMediaAsNewTrack(model, media, 0);
+    TrackCleanup& c = model.tracks[0].cleanup;
+    c.dcRemoval = true;
+    c.highPass = {true, 150.0, 48};
+    c.expander = {true, -45.0, 2.5, 18.0, 300.0};
+    MediaPool pool;
+
+    auto snapshot = buildPlaybackSnapshot(model, pool, 48000.0, 1);
+    const CleanupParams& p = snapshot->tracks[0].cleanup;
+    CHECK(p.active());
+    CHECK(p.dcRemoval);
+    CHECK(p.highPass);
+    CHECK(p.highPassHz == 150.0f);
+    CHECK(p.highPassOrder == 8);
+    CHECK(p.expander);
+    CHECK(p.thresholdDb == -45.0f);
+    CHECK(p.ratio == 2.5f);
+    CHECK(p.rangeDb == 18.0f);
+    CHECK(p.releaseMs == 300.0f);
+    CHECK_FALSE(snapshot->tracks[1].cleanup.active());
+
+    // Bypass, per track or for the whole project (A/B), plays the track dry.
+    snapshot = buildPlaybackSnapshot(model, pool, 48000.0, 2, nullptr, {.bypassCleanup = true});
+    CHECK_FALSE(snapshot->tracks[0].cleanup.active());
+    c.bypassed = true;
+    snapshot = buildPlaybackSnapshot(model, pool, 48000.0, 3);
+    CHECK_FALSE(snapshot->tracks[0].cleanup.active());
+    CHECK(c.hasStages());
+    CHECK_FALSE(c.active());
+}
+
 TEST_CASE("TimeMapper round-trips positions", "[session][snapshot]")
 {
     const TimeMapper map{44100.0, 48000.0};
@@ -230,4 +270,79 @@ TEST_CASE("Snapshot track keys are stable across rebuilds and distinct per track
     REQUIRE(a->tracks[1].key == b->tracks[1].key);
     REQUIRE(a->tracks[0].key != a->tracks[1].key);
     REQUIRE(b->tracks[0].gainLeft < a->tracks[0].gainLeft);
+}
+
+TEST_CASE("Solo is exclusive by default; additive solo keeps the others", "[session][mixer]")
+{
+    ProjectModel model = makeEmptyProject("solo");
+    for (int i = 0; i < 3; ++i) {
+        Track track;
+        track.id = TrackId::generate();
+        model.tracks.push_back(track);
+    }
+    const TrackId a = model.tracks[0].id, b = model.tracks[1].id, c = model.tracks[2].id;
+
+    REQUIRE(setTrackSolo(model, a, true, true));
+    REQUIRE(setTrackSolo(model, b, true, true)); // moves the solo from A to B
+    CHECK_FALSE(model.tracks[0].soloed);
+    CHECK(model.tracks[1].soloed);
+    CHECK_FALSE(model.isAudible(model.tracks[0]));
+    CHECK(model.isAudible(model.tracks[1]));
+
+    REQUIRE(setTrackSolo(model, c, true, false)); // Ctrl+click adds C
+    CHECK(model.tracks[1].soloed);
+    CHECK(model.tracks[2].soloed);
+    CHECK_FALSE(setTrackSolo(model, c, true, false)); // no change
+
+    REQUIRE(setTrackSolo(model, b, false, true)); // un-solo B only
+    CHECK_FALSE(model.tracks[1].soloed);
+    CHECK(model.tracks[2].soloed);
+    CHECK_FALSE(setTrackSolo(model, TrackId::generate(), true, true));
+}
+
+TEST_CASE("Batch imports get short track names", "[session][import]")
+{
+    using Names = std::vector<std::string>;
+    CHECK(shortTrackNames({"Night Drive_ (Backing Vocals)", "Night Drive_ (Bass)", "Night Drive_ (Drum Kit)"})
+          == Names{"Backing Vocals", "Bass", "Drum Kit"});
+    // Suno's numbered stems share nothing.
+    CHECK(shortTrackNames({"0 Lead Vocals", "1 Backing Vocals", "2 Drums"}) == Names{"0 Lead Vocals", "1 Backing Vocals", "2 Drums"});
+    // A shared word is not a separator: names stay whole.
+    CHECK(shortTrackNames({"Synth Keys", "Synth Pad"}) == Names{"Synth Keys", "Synth Pad"});
+    CHECK(shortTrackNames({"Song - Bass", "Song - Bass Guitar"}) == Names{"Bass", "Bass Guitar"});
+    // Would become empty: unchanged.
+    CHECK(shortTrackNames({"Song (Bass)", "Song (Bass)"}) == Names{"Song (Bass)", "Song (Bass)"});
+    CHECK(shortTrackNames({"Only One (Bass)"}) == Names{"Only One (Bass)"});
+}
+
+TEST_CASE("MIDI files import as stereo media and render through the SoundFont when loaded", "[session][midi]")
+{
+    TempDir dir("midi-project");
+    REQUIRE(ProjectStore::createLayout(dir.path()).ok());
+    REQUIRE(writeFileAtomically(dir / "font.sf2", makeSoundFont()).ok());
+    REQUIRE(writeFileAtomically(dir / "Song (Lead).mid", oneNoteSong()).ok());
+
+    const auto ref = importAudioFile(dir.path(), dir / "Song (Lead).mid", MediaStorage::Copied, 44100.0);
+    REQUIRE(ref.ok());
+    CHECK(ref->sampleRate == 44100.0);
+    CHECK(ref->numChannels == 2);
+    CHECK(ref->numFrames == static_cast<std::int64_t>(std::ceil(3.5 * 44100.0)));
+
+    MediaLoadOptions options;
+    const auto noFont = loadMedia(dir.path(), *ref, options);
+    REQUIRE_FALSE(noFont.ok());
+    CHECK(noFont.error().code == ErrorCode::Unavailable);
+
+    options.soundFont = dir / "font.sf2";
+    options.engineSampleRate = 48000.0;
+    const auto loaded = loadMedia(dir.path(), *ref, options);
+    REQUIRE(loaded.ok());
+    CHECK(loaded->original->numFrames() == ref->numFrames);
+    CHECK(loaded->original->sampleRate == 44100.0);
+    CHECK(loaded->renditionRate == 48000.0);
+    REQUIRE(loaded->peaks != nullptr);
+    float peak = 0.0f;
+    for (float s : loaded->original->channels[0])
+        peak = std::max(peak, std::abs(s));
+    CHECK(peak > 0.01f);
 }

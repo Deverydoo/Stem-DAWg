@@ -8,5 +8,6 @@ daw_add_module(engine
         src/AudioRuntime.cpp
     PUBLIC_DEPS
         daw::core
+        daw::dsp
     PRIVATE_DEPS
         daw::juce)

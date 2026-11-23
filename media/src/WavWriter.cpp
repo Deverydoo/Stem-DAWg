@@ -26,6 +26,20 @@ void putU32(std::string& out, std::uint32_t v)
         out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
 }
 
+void putU64(std::string& out, std::uint64_t v)
+{
+    for (int i = 0; i < 8; ++i)
+        out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+}
+
+constexpr std::uint32_t kSizeInDs64 = 0xFFFFFFFFu;
+constexpr std::uint64_t kDs64ChunkBytes = 8 + 28;
+
+std::uint64_t bytesPerSample(WavSampleFormat format)
+{
+    return format == WavSampleFormat::Pcm16 ? 2u : format == WavSampleFormat::Pcm24 ? 3u : 4u;
+}
+
 void putTag(std::string& out, const char* tag)
 {
     out.append(tag, 4);
@@ -46,6 +60,11 @@ struct DitherSource {
 
 } // namespace
 
+bool usesRf64(WavContainer container, std::uint64_t riffSize) noexcept
+{
+    return container == WavContainer::Rf64 || (container == WavContainer::Auto && riffSize > 0xFFFFFFFFull);
+}
+
 std::string encodeWav(const AudioAsset& asset, const WavEncodeOptions& options)
 {
     const WavSampleFormat format = options.format;
@@ -61,13 +80,23 @@ std::string encodeWav(const AudioAsset& asset, const WavEncodeOptions& options)
     const std::string info = options.tags != nullptr ? encodeRiffInfoChunk(*options.tags) : std::string();
     const std::string id3 = options.tags != nullptr ? encodeId3Chunk(*options.tags) : std::string();
     const std::uint64_t dataPad = dataBytes & 1;
-    const std::uint64_t riffSize = 4 + (8 + 16) + info.size() + (8 + dataBytes + dataPad) + id3.size();
+    const std::uint64_t plainRiffSize = 4 + (8 + 16) + info.size() + (8 + dataBytes + dataPad) + id3.size();
+    const bool rf64 = usesRf64(options.container, plainRiffSize);
+    const std::uint64_t riffSize = plainRiffSize + (rf64 ? kDs64ChunkBytes : 0);
 
     std::string out;
     out.reserve(static_cast<std::size_t>(8 + riffSize));
-    putTag(out, "RIFF");
-    putU32(out, static_cast<std::uint32_t>(riffSize));
+    putTag(out, rf64 ? "RF64" : "RIFF");
+    putU32(out, rf64 ? kSizeInDs64 : static_cast<std::uint32_t>(riffSize));
     putTag(out, "WAVE");
+    if (rf64) {
+        putTag(out, "ds64");
+        putU32(out, 28);
+        putU64(out, riffSize);
+        putU64(out, dataBytes);
+        putU64(out, frames);
+        putU32(out, 0); // no table of other large chunks
+    }
     putTag(out, "fmt ");
     putU32(out, 16);
     putU16(out, formatTag);
@@ -78,7 +107,7 @@ std::string encodeWav(const AudioAsset& asset, const WavEncodeOptions& options)
     putU16(out, bits);
     out += info;
     putTag(out, "data");
-    putU32(out, static_cast<std::uint32_t>(dataBytes));
+    putU32(out, rf64 ? kSizeInDs64 : static_cast<std::uint32_t>(dataBytes));
 
     const std::size_t dataStart = out.size();
     out.resize(dataStart + static_cast<std::size_t>(dataBytes));
@@ -133,9 +162,10 @@ Status writeWavFile(const std::filesystem::path& path, const AudioAsset& asset, 
     if (asset.numChannels() <= 0 || asset.sampleRate <= 0.0)
         return makeError(ErrorCode::InvalidArgument, "cannot write WAV: asset has no channels or sample rate");
     const std::uint64_t dataBytes = static_cast<std::uint64_t>(asset.numFrames()) * static_cast<std::uint64_t>(asset.numChannels())
-                                    * (options.format == WavSampleFormat::Pcm16 ? 2u : options.format == WavSampleFormat::Pcm24 ? 3u : 4u);
-    if (dataBytes > 0xFFFFFFFFull - (1u << 26))
-        return makeError(ErrorCode::InvalidArgument, "render is too long for a WAV file (4 GB limit); RF64 export is planned");
+                                    * bytesPerSample(options.format);
+    // Tags add at most a few MB (artwork); leave room for them in the RIFF size check.
+    if (options.container == WavContainer::Riff && dataBytes > 0xFFFFFFFFull - (1u << 26))
+        return makeError(ErrorCode::InvalidArgument, "render is too long for a plain RIFF WAV file (4 GB limit): use RF64");
     return writeFileAtomically(path, encodeWav(asset, options));
 }
 

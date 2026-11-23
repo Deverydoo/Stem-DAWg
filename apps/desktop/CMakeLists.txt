@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Chaos Rift Entertainment, LLC and the Stem DAWg contributors
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network)
 qt_standard_project_setup()
 
 # Windows resources (application icon + version info).
@@ -23,6 +23,11 @@ qt_add_executable(stem_dawg WIN32
     ExportDialog.h ExportDialog.cpp
     DeviceDialog.h DeviceDialog.cpp
     DiagnosticsPanel.h DiagnosticsPanel.cpp
+    LoudnessDisplay.h LoudnessDisplay.cpp
+    StemReportPanel.h StemReportPanel.cpp
+    CleanupPanel.h CleanupPanel.cpp
+    SoundFontDialog.h SoundFontDialog.cpp
+    VoiceModelDialog.h VoiceModelDialog.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/stem-dawg.rc")
 
 # Window icons (every size, so Qt picks a crisp one per DPI) and the About logo.
@@ -44,6 +49,7 @@ qt_add_resources(stem_dawg "branding"
 
 target_link_libraries(stem_dawg PRIVATE
     Qt6::Widgets
+    Qt6::Network
     daw::session
     daw::ai
     daw::compile_options)

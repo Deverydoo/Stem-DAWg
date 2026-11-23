@@ -15,6 +15,7 @@
 // (buses, sends, plugins, latency compensation) behind the same exchange.
 
 #include <daw/core/AudioAsset.h>
+#include <daw/dsp/CleanupChain.h>
 
 #include <cstdint>
 #include <vector>
@@ -40,6 +41,10 @@ struct TrackPlayback {
     // carry each track's ramp state into the next snapshot. 0 = no identity
     // (the track starts at its target gain).
     std::uint64_t key = 0;
+    // Pre-fader clean-up (DC removal, high-pass, expander). Inactive params
+    // play the track dry. Needs a non-zero key; the chain's state follows the
+    // key across snapshots so parameter changes do not restart it.
+    CleanupParams cleanup;
 };
 
 struct PlaybackSnapshot {
@@ -49,6 +54,8 @@ struct PlaybackSnapshot {
     float masterGain = 1.0f;
     std::int64_t endFrame = 0;   // end of the last clip (engine frames)
     std::vector<AudioAssetPtr> keepAlive;
+    // Noise profiles at the engine rate, pointed to by TrackPlayback::cleanup.
+    std::vector<std::shared_ptr<const std::vector<float>>> noiseProfiles;
 };
 
 } // namespace daw

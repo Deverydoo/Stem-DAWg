@@ -8,6 +8,7 @@
 //   <Project>/
 //     project.json            manifest (atomic replace on every save)
 //     Media/Original/         imported source files (Copied storage)
+//     Media/Processed/        processed copies (voice denoise), derived from Original
 //     Media/Recorded/         (Milestone 2)
 //     Media/Samples/          (Milestone 5)
 //     Analysis/<mediaId>/     analysis results, JSON in M1

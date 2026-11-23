@@ -13,14 +13,20 @@
 //  * Control methods (prepare/begin/end/play/stop/seek/publishSnapshot/
 //    collectGarbage/popEvent) are called from ONE control thread (the Qt main
 //    thread in the app). Device start/stop must also happen on that thread.
-//  * transportState()/takeMeterPeaks()/diagnostics() are lock-free reads that
-//    are safe from any thread.
+//  * transportState()/takeMeterPeaks()/loudness()/diagnostics() are lock-free
+//    reads that are safe from any thread.
 //  * While processing is active, commands are queued and applied at the start
 //    of the next block (block-accurate). While stopped they apply immediately.
+//  * With EngineConfig::declick, Stop and Seek during playback first fade the
+//    output out over kDeclickSeconds and take effect when it is silent; Play
+//    and a completed Seek fade back in. Stop keeps the position it was asked
+//    at. Off by default so offline renders stay sample-exact.
 
 #include <daw/core/RtEvent.h>
 #include <daw/core/SnapshotExchange.h>
 #include <daw/core/SpscQueue.h>
+#include <daw/dsp/CleanupChain.h>
+#include <daw/dsp/LoudnessMeter.h>
 #include <daw/engine/PlaybackSnapshot.h>
 #include <daw/engine/Transport.h>
 
@@ -28,6 +34,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace daw {
 
@@ -35,6 +42,11 @@ struct EngineConfig {
     double sampleRate = 48000.0;
     int maxBlockSize = 512;
     int numOutputChannels = 2;
+    bool meterLoudness = true; // live loudness metering (offline renders that measure themselves turn it off)
+    bool declick = false;      // fade out/in around stop, seek and play (the live device turns it on)
+    // Tracks that can run a clean-up chain at once (each chain preallocates
+    // ~140 KB of FFT and delay buffers). Further tracks play dry. At most 256.
+    int maxCleanupTracks = 128;
 };
 
 struct MeterPeaks {
@@ -57,6 +69,8 @@ struct EngineDiagnostics {
 
 class AudioEngine {
 public:
+    static constexpr double kDeclickSeconds = 0.005;
+
     AudioEngine();
     ~AudioEngine();
 
@@ -87,6 +101,15 @@ public:
     TransportState transportState() const noexcept;
     /// Returns and resets the per-channel absolute peaks since the last call.
     MeterPeaks takeMeterPeaks() noexcept;
+    /// Live loudness of the output while playing (BS.1770 / EBU R 128). The
+    /// integrated value, range and true peak accumulate from the last seek or
+    /// resetLoudness(); pausing keeps them. Values update every 100 ms.
+    LoudnessReading loudness() const noexcept;
+    /// Restarts the loudness measurement (control thread).
+    void resetLoudness();
+    /// Deepest expander gain reduction (dB, <= 0) of the track with this
+    /// snapshot key since the last call; 0 when it has no running chain.
+    float takeCleanupReductionDb(std::uint64_t trackKey) noexcept;
     EngineDiagnostics diagnostics() const noexcept;
 
     // ---- real-time ---------------------------------------------------------
@@ -95,12 +118,23 @@ public:
 
 private:
     bool sendCommand(const TransportCommand& command);
+    void applyCommand(const TransportCommand& command) noexcept;
     void drainCommands() noexcept;
+    void handleDeclicked(const TransportCommand& command) noexcept;
+    void applyFade(float* const* outputs, int numChannels, int numFrames) noexcept;
+    void completeFadeOut() noexcept;
+    void flushPendingTransport() noexcept;
+    void publishLoudness() noexcept;
     void publishTransport() noexcept;
     void pushEvent(RtEventCode code, std::int64_t a = 0, std::int64_t b = 0) noexcept;
     void render(const PlaybackSnapshot& snapshot, float* const* outputs, int numChannels, std::int64_t position,
                 int numFrames) noexcept;
     void adoptMix(const PlaybackSnapshot& snapshot) noexcept;
+    void adoptCleanup(const PlaybackSnapshot& snapshot) noexcept;
+    struct MixRamp;
+    struct CleanupSlot;
+    void renderCleanTrack(const TrackPlayback& track, float masterGain, const MixRamp& ramp, std::size_t slotIndex,
+                          float* const* outputs, int numChannels, std::int64_t position, int numFrames) noexcept;
 
     // Per-track gain smoothing (audio-thread private, preallocated). Index i
     // follows snapshot track i; state is matched to the previous snapshot by key.
@@ -121,6 +155,17 @@ private:
     };
     static constexpr std::size_t kMaxRampedTracks = 256; // further tracks switch gain without a ramp
 
+    // Clean-up chain state per track (audio-thread private after prepare).
+    // Slots are claimed by track key when a snapshot is adopted, so a track
+    // keeps its filter memory while its settings change.
+    struct CleanupSlot {
+        std::uint64_t key = 0;     // 0 = free
+        std::int64_t nextFrame = -1; // output frame the chain continues from; anything else re-primes it
+        CleanupChain chain;
+    };
+    static constexpr std::size_t kMaxCleanupTracks = kMaxRampedTracks; // upper bound for EngineConfig::maxCleanupTracks
+    static constexpr int kNoSlot = -1;
+
     EngineConfig config_{};
     Transport transport_; // audio-thread owned while processing
 
@@ -133,6 +178,14 @@ private:
     std::atomic<bool> publishedPlaying_{false};
     std::atomic<float> meterLeft_{0.0f};
     std::atomic<float> meterRight_{0.0f};
+    std::atomic<bool> loudnessResetRequested_{false};
+    std::atomic<double> loudMomentary_{kLoudnessFloor};
+    std::atomic<double> loudShortTerm_{kLoudnessFloor};
+    std::atomic<double> loudIntegrated_{kLoudnessFloor};
+    std::atomic<double> loudRange_{0.0};
+    std::atomic<double> loudTruePeak_{kLoudnessFloor};
+    std::atomic<double> loudMaxMomentary_{kLoudnessFloor};
+    std::atomic<double> loudSeconds_{0.0};
 
     std::atomic<std::uint64_t> callbacks_{0};
     std::atomic<std::uint64_t> deadlineMisses_{0};
@@ -151,6 +204,23 @@ private:
     std::size_t rampCount_ = 0;
     std::array<MixRamp, kMaxRampedTracks> ramps_{};
     std::array<MixRamp, kMaxRampedTracks> rampScratch_{};
+    std::vector<CleanupSlot> cleanupSlots_;           // EngineConfig::maxCleanupTracks, allocated in prepare()
+    std::array<int, kMaxRampedTracks> cleanupSlotOf_{}; // per snapshot track: slot index or kNoSlot
+    std::array<bool, kMaxCleanupTracks> slotClaimed_{};
+    std::array<std::atomic<std::uint64_t>, kMaxCleanupTracks> slotKeys_{};  // published copy of CleanupSlot::key
+    std::array<std::atomic<float>, kMaxCleanupTracks> slotReduction_{};    // dB, min since the last take
+    std::vector<float> cleanScratch_;                 // 2 x cleanScratchFrames_, allocated in prepare()
+    int cleanScratchFrames_ = 0;
+    LoudnessMeter loudness_; // prepared in prepare(), then audio-thread owned while processing
+
+    // Declick (audio-thread private while processing).
+    int fadeFrames_ = 240;
+    float fadeLevel_ = 1.0f;  // output gain now
+    float fadeTarget_ = 1.0f; // 0 while fading out for a pending stop/seek
+    bool pendingStop_ = false;
+    bool pendingSeek_ = false;
+    std::int64_t pendingStopAt_ = 0;
+    std::int64_t pendingSeekTo_ = 0;
 };
 
 } // namespace daw
