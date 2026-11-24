@@ -6,7 +6,9 @@
 // Second-order IIR section (transposed direct form II, double precision
 // state). Real-time safe: no allocation, no locking.
 
+#include <algorithm>
 #include <cmath>
+#include <complex>
 #include <numbers>
 
 namespace daw {
@@ -49,6 +51,63 @@ struct BiquadCoefficients {
         c.b2 = c.b0;
         c.a1 = -2.0 * cosW / a0;
         c.a2 = (1.0 - alpha) / a0;
+        return c;
+    }
+
+    /// Peaking (bell) section: `gainDb` at `hz`, width set by q (RBJ cookbook).
+    static BiquadCoefficients peaking(double hz, double q, double gainDb, double sampleRate) noexcept
+    {
+        const double a = std::pow(10.0, gainDb / 40.0);
+        const double w0 = 2.0 * std::numbers::pi * hz / sampleRate;
+        const double cosW = std::cos(w0);
+        const double alpha = std::sin(w0) / (2.0 * q);
+        const double a0 = 1.0 + alpha / a;
+        BiquadCoefficients c;
+        c.b0 = (1.0 + alpha * a) / a0;
+        c.b1 = -2.0 * cosW / a0;
+        c.b2 = (1.0 - alpha * a) / a0;
+        c.a1 = c.b1;
+        c.a2 = (1.0 - alpha / a) / a0;
+        return c;
+    }
+
+    /// Low shelf: `gainDb` below `hz` (the midpoint of the transition); q = 1/sqrt(2) is the steepest without overshoot.
+    static BiquadCoefficients lowShelf(double hz, double q, double gainDb, double sampleRate) noexcept
+    {
+        return shelf(hz, q, gainDb, sampleRate, false);
+    }
+
+    /// High shelf: `gainDb` above `hz`.
+    static BiquadCoefficients highShelf(double hz, double q, double gainDb, double sampleRate) noexcept
+    {
+        return shelf(hz, q, gainDb, sampleRate, true);
+    }
+
+    /// Magnitude response at `hz`, in dB.
+    double magnitudeDb(double hz, double sampleRate) const noexcept
+    {
+        const double w = 2.0 * std::numbers::pi * hz / sampleRate;
+        const std::complex<double> z1 = std::polar(1.0, -w), z2 = std::polar(1.0, -2.0 * w);
+        const std::complex<double> h = (b0 + b1 * z1 + b2 * z2) / (1.0 + a1 * z1 + a2 * z2);
+        return 20.0 * std::log10(std::max(std::abs(h), 1e-12));
+    }
+
+private:
+    static BiquadCoefficients shelf(double hz, double q, double gainDb, double sampleRate, bool high) noexcept
+    {
+        const double a = std::pow(10.0, gainDb / 40.0);
+        const double w0 = 2.0 * std::numbers::pi * hz / sampleRate;
+        const double cosW = std::cos(w0);
+        const double alpha = std::sin(w0) / (2.0 * q);
+        const double root = 2.0 * std::sqrt(a) * alpha;
+        const double sign = high ? -1.0 : 1.0; // the high shelf mirrors the cosine terms
+        const double a0 = (a + 1.0) + sign * (a - 1.0) * cosW + root;
+        BiquadCoefficients c;
+        c.b0 = a * ((a + 1.0) - sign * (a - 1.0) * cosW + root) / a0;
+        c.b1 = sign * 2.0 * a * ((a - 1.0) - sign * (a + 1.0) * cosW) / a0;
+        c.b2 = a * ((a + 1.0) - sign * (a - 1.0) * cosW - root) / a0;
+        c.a1 = -sign * 2.0 * ((a - 1.0) + sign * (a + 1.0) * cosW) / a0;
+        c.a2 = ((a + 1.0) + sign * (a - 1.0) * cosW - root) / a0;
         return c;
     }
 };

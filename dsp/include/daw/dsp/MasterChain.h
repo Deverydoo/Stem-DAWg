@@ -3,11 +3,14 @@
 
 #pragma once
 
-// The master bus, after the tracks are summed: a true-peak limiter. The
-// master fader comes before it (the snapshot folds it into every track's
-// gains), so it is the drive into the limiter. Milestone 5 adds tonal EQ and
-// multiband compression in front of the limiter (see
-// docs/milestone-5/M5-Mastering.md).
+// The master bus, after the tracks are summed: tonal EQ -> true-peak
+// limiter. The master fader comes before it (the snapshot folds it into
+// every track's gains), so it is the drive into the limiter. See
+// docs/milestone-5/M5-Mastering.md.
+//
+// The EQ has five fixed bands (kMasterEqBands): broad moves for tonal
+// balance, not surgery. Only their gains are set, which keeps suggested
+// moves (TonalBalance) and hand edits on the same five controls.
 //
 // TruePeakLimiter keeps the true peak (ITU-R BS.1770-4, 4x oversampled) of
 // its output at or under the ceiling, so neither a DAC nor a lossy encoder
@@ -28,6 +31,7 @@
 // The delay (latency()) is the same whether the limiter is on or off, so
 // switching it does not shift the audio. Real-time safe after prepare().
 
+#include <daw/dsp/Biquad.h>
 #include <daw/dsp/TruePeak.h>
 
 #include <array>
@@ -82,10 +86,32 @@ private:
     float minGain_ = 1.0f;
 };
 
+enum class EqShape { LowShelf, Peak, HighShelf };
+
+struct MasterEqBand {
+    EqShape shape;
+    double hz;
+    double q;
+};
+inline constexpr std::size_t kMasterEqBandCount = 5;
+inline constexpr std::array<MasterEqBand, kMasterEqBandCount> kMasterEqBands{{
+    {EqShape::LowShelf, 100.0, 0.7071}, // low end
+    {EqShape::Peak, 250.0, 0.8},        // low mids (mud)
+    {EqShape::Peak, 1000.0, 0.8},       // mids
+    {EqShape::Peak, 3000.0, 0.8},       // presence
+    {EqShape::HighShelf, 8000.0, 0.7071}, // air
+}};
+inline constexpr double kMasterEqMaxDb = 12.0;
+
+/// Coefficients of one master EQ band at a gain.
+BiquadCoefficients masterEqCoefficients(std::size_t band, double gainDb, double sampleRate) noexcept;
+
 struct MasterParams {
     bool limiter = false;
     float ceilingDbtp = -1.0f;
     float releaseMs = 100.0f;
+    bool eq = false;
+    std::array<float, kMasterEqBandCount> eqGainDb{};
 
     friend bool operator==(const MasterParams&, const MasterParams&) = default;
 };
@@ -103,6 +129,9 @@ public:
 
 private:
     MasterParams params_;
+    double sampleRate_ = 48000.0;
+    std::array<std::array<Biquad, kMasterEqBandCount>, 2> eq_{};
+    std::array<bool, kMasterEqBandCount> eqOn_{}; // bands with a gain
     TruePeakLimiter limiter_;
 };
 

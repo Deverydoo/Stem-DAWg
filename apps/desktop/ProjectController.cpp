@@ -8,7 +8,9 @@
 #include <daw/ai/Analyzers.h>
 #include <daw/core/Files.h>
 #include <daw/core/Logger.h>
+#include <daw/media/AudioFileDecoder.h>
 #include <daw/media/Midi.h>
+#include <daw/project/ProjectSerializer.h>
 #include <daw/project/ProjectStore.h>
 #include <daw/session/MediaLoader.h>
 #include <daw/session/NoiseTools.h>
@@ -25,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <map>
 #include <utility>
 
@@ -556,6 +559,113 @@ void ProjectController::matchLoudness(double targetLufs)
                                                        .arg(gain, 0, 'f', 1)
                                                        .arg(match->resultLufs, 0, 'f', 1)
                                                        .arg(targetLufs, 0, 'f', 1));
+                    });
+}
+
+namespace {
+
+std::filesystem::path tonalLibraryDirectory()
+{
+    return daw::appDataDirectory() / "TonalTargets";
+}
+
+} // namespace
+
+std::vector<daw::TonalTargetSettings> ProjectController::tonalTargetLibrary() const
+{
+    std::vector<daw::TonalTargetSettings> targets;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(tonalLibraryDirectory(), ec)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".json")
+            continue;
+        std::ifstream in(entry.path(), std::ios::binary);
+        const auto doc = nlohmann::json::parse(in, nullptr, false);
+        daw::TonalTargetSettings t = daw::tonalTargetFromJson(doc);
+        if (!t.empty())
+            targets.push_back(std::move(t));
+    }
+    std::sort(targets.begin(), targets.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    return targets;
+}
+
+void ProjectController::buildTonalTarget(const QString& folder)
+{
+    const std::filesystem::path dir = daw::utf8ToPath(folder.toStdString());
+    std::vector<std::filesystem::path> files;
+    std::error_code ec;
+    const auto extensions = daw::supportedAudioExtensions();
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file())
+            continue;
+        std::string ext = daw::pathToUtf8(entry.path().extension());
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (std::find(extensions.begin(), extensions.end(), ext) != extensions.end())
+            files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    if (files.empty()) {
+        Q_EMIT tonalFailed(tr("No audio files in %1").arg(folder));
+        return;
+    }
+    const std::string name = daw::pathToUtf8(dir.filename());
+    Q_EMIT tonalBusy(true, tr("Measuring %n reference track(s)...", nullptr, static_cast<int>(files.size())));
+    const auto token = cancel_->token();
+    runInBackground(
+        [name, files, token] {
+            std::vector<std::string> skipped;
+            auto target = daw::tonalTargetFromFiles(name, files, &skipped, {}, token);
+            return std::make_pair(std::move(target), std::move(skipped));
+        },
+        [this, name](std::pair<daw::Result<daw::TonalTarget>, std::vector<std::string>>& outcome) {
+            Q_EMIT tonalBusy(false, {});
+            auto& target = outcome.first;
+            if (!target) {
+                if (target.error().code != daw::ErrorCode::Cancelled)
+                    Q_EMIT tonalFailed(tr("Could not build the target: %1").arg(QString::fromStdString(target.error().message)));
+                return;
+            }
+            const daw::TonalTargetSettings settings = daw::toSettings(*target);
+            std::error_code ec;
+            std::filesystem::create_directories(tonalLibraryDirectory(), ec);
+            std::string file = name;
+            for (char& c : file)
+                if (std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos)
+                    c = '_';
+            if (!daw::writeFileAtomically(tonalLibraryDirectory() / daw::utf8ToPath(file + ".json"), daw::tonalTargetToJson(settings).dump(2)))
+                Q_EMIT statusMessage(tr("Could not save the target to the library; it stays in this project."));
+            Q_EMIT tonalLibraryChanged();
+            applyEdit(tr("Tonal Target"), {}, [&](daw::ProjectModel& m) {
+                return std::exchange(m.master.tonalTarget, settings) != settings;
+            });
+            Q_EMIT mixerChanged();
+            if (!outcome.second.empty())
+                Q_EMIT statusMessage(tr("Skipped %n file(s) that could not be read.", nullptr, static_cast<int>(outcome.second.size())));
+            compareTonalBalance();
+        });
+}
+
+void ProjectController::compareTonalBalance()
+{
+    const daw::TonalTargetSettings target = model_.master.tonalTarget;
+    if (target.empty()) {
+        Q_EMIT tonalFailed(tr("Choose a tonal target first."));
+        return;
+    }
+    std::array<float, daw::kMasterEqBandCount> eq{};
+    for (std::size_t b = 0; b < eq.size(); ++b)
+        eq[b] = model_.master.eq ? static_cast<float>(model_.master.eqGainDb[b]) : 0.0f;
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    Q_EMIT tonalBusy(true, tr("Measuring the mix..."));
+    runInBackground([this, model, token] { return daw::tonalProfileOfMix(model, pool_, {}, token); },
+                    [this, target, eq](daw::Result<daw::TonalProfile>& profile) {
+                        Q_EMIT tonalBusy(false, {});
+                        if (!profile) {
+                            if (profile.error().code != daw::ErrorCode::Cancelled)
+                                Q_EMIT tonalFailed(tr("Could not measure the mix: %1").arg(QString::fromStdString(profile.error().message)));
+                            return;
+                        }
+                        Q_EMIT tonalCompared(daw::compareTonal(*profile, daw::fromSettings(target), eq), target);
                     });
 }
 

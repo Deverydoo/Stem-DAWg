@@ -20,10 +20,13 @@
 
 #include <daw/core/CancellationToken.h>
 #include <daw/core/Result.h>
+#include <daw/dsp/TonalBalance.h>
 #include <daw/project/ProjectModel.h>
 #include <daw/session/MediaPool.h>
 
+#include <filesystem>
 #include <functional>
+#include <vector>
 
 namespace daw {
 
@@ -68,5 +71,24 @@ struct LoudnessMatchOptions {
 Result<LoudnessMatch> matchLoudness(const ProjectModel& model, const MediaPool& pool, double targetLufs,
                                     const MasterSettings& master, const LoudnessMatchOptions& options = {},
                                     const CancellationToken& cancel = {});
+
+// ---- tonal balance (see dsp/TonalBalance) ------------------------------------
+
+/// The tonal profile of an audio file (a reference track).
+Result<TonalProfile> tonalProfileOfFile(const std::filesystem::path& path, const CancellationToken& cancel = {});
+
+/// The tonal profile of the project's mix as heard (master bus included).
+Result<TonalProfile> tonalProfileOfMix(const ProjectModel& model, const MediaPool& pool,
+                                       const std::function<void(double)>& progress = {}, const CancellationToken& cancel = {});
+
+/// A target from reference files. Files that cannot be read are skipped and
+/// listed in `skipped`; it fails when none can be read.
+Result<TonalTarget> tonalTargetFromFiles(const std::string& name, const std::vector<std::filesystem::path>& files,
+                                         std::vector<std::string>* skipped = nullptr,
+                                         const std::function<void(double)>& progress = {}, const CancellationToken& cancel = {});
+
+/// Between the analysis form and the form a project stores.
+TonalTargetSettings toSettings(const TonalTarget& target);
+TonalTarget fromSettings(const TonalTargetSettings& settings);
 
 } // namespace daw

@@ -96,6 +96,13 @@ public:
     /// Sets the master fader for `targetLufs` through the limiter (switched
     /// on), in the background; loudnessMatched or loudnessMatchFailed follows.
     void matchLoudness(double targetLufs);
+    /// Tonal targets saved in the app's data folder (TonalTargets/*.json).
+    std::vector<daw::TonalTargetSettings> tonalTargetLibrary() const;
+    /// Builds a target from the audio files in `folder` (background), saves
+    /// it to the library, makes it the project's target and compares.
+    void buildTonalTarget(const QString& folder);
+    /// Measures the mix against the project's target (background).
+    void compareTonalBalance();
 
     // Clean-up chains (live, non-destructive).
     void setTrackCleanup(const daw::TrackId& track, daw::TrackCleanup cleanup);
@@ -169,6 +176,10 @@ Q_SIGNALS:
     void bleedLossWarning(const QStringList& trackNames, double worstChangeDb);
     void loudnessMatched(const daw::LoudnessMatch& match, double targetLufs);
     void loudnessMatchFailed(const QString& message);
+    void tonalLibraryChanged();
+    void tonalBusy(bool running, const QString& message);
+    void tonalCompared(const daw::TonalComparison& comparison, const daw::TonalTargetSettings& target);
+    void tonalFailed(const QString& message);
 
 private:
     void resetSession();

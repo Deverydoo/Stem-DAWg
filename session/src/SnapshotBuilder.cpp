@@ -102,7 +102,10 @@ std::unique_ptr<PlaybackSnapshot> buildPlaybackSnapshot(const ProjectModel& mode
         m.clamp();
         snapshot->master = {.limiter = m.limiter,
                             .ceilingDbtp = static_cast<float>(m.ceilingDbtp),
-                            .releaseMs = static_cast<float>(m.releaseMs)};
+                            .releaseMs = static_cast<float>(m.releaseMs),
+                            .eq = m.eq};
+        for (std::size_t b = 0; b < m.eqGainDb.size(); ++b)
+            snapshot->master.eqGainDb[b] = static_cast<float>(m.eqGainDb[b]);
     }
 
     for (const Track& track : model.tracks) {

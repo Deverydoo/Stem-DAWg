@@ -11,12 +11,16 @@
 #include <daw/session/ProjectOperations.h>
 #include <daw/session/Renderer.h>
 
+#include "TempDir.h"
 #include "TestSignals.h"
+
+#include <daw/media/WavWriter.h>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <fstream>
 
 using namespace daw;
 using namespace daw::test;
@@ -144,4 +148,39 @@ TEST_CASE("Match Loudness refuses a silent mix", "[session][master]")
     Fixture f;
     f.add(makeSilence(48000, kRate));
     CHECK_FALSE(matchLoudness(f.model, f.pool, -14.0, MasterSettings{}).ok());
+}
+
+TEST_CASE("Tonal targets come from reference files and the mix is profiled as heard", "[session][master][tonal]")
+{
+    TempDir dir;
+    const auto bright = dir.path() / "bright.wav";
+    const auto dark = dir.path() / "dark.wav";
+    const auto broken = dir.path() / "broken.wav";
+    REQUIRE(writeWavFile(bright, *makeNoise(96000, kRate, 2, 0.3f, 1)).ok());   // white: lots of top end
+    REQUIRE(writeWavFile(dark, *makeSine(100.0, 2.0, kRate, 2, 0.5f)).ok());   // all low end
+    { std::ofstream(broken) << "not audio"; }
+
+    std::vector<std::string> skipped;
+    const auto target = tonalTargetFromFiles("refs", {bright, dark, broken}, &skipped);
+    REQUIRE(target.ok());
+    CHECK(target->references == std::vector<std::string>{"bright.wav", "dark.wav"});
+    CHECK(skipped == std::vector<std::string>{"broken.wav"});
+    CHECK_FALSE(tonalTargetFromFiles("none", {broken}).ok());
+
+    // Stored in a project and read back, it compares the same way.
+    const TonalTargetSettings stored = toSettings(*target);
+    CHECK(stored.meanDb.size() == kTonalBands);
+    CHECK(fromSettings(stored) == *target);
+
+    // The mix as heard: the master EQ is in it.
+    Fixture f;
+    f.add(makeNoise(96000, kRate, 2, 0.2f, 5));
+    const auto plain = tonalProfileOfMix(f.model, f.pool);
+    f.model.master.eq = true;
+    f.model.master.eqGainDb = {0.0, 0.0, 0.0, 0.0, -6.0};
+    const auto darker = tonalProfileOfMix(f.model, f.pool);
+    REQUIRE(plain.ok());
+    REQUIRE(darker.ok());
+    const std::size_t top = kTonalBands - 1, mid = 15; // 16 kHz, 1 kHz
+    CHECK((darker->levelDb[top] - darker->levelDb[mid]) - (plain->levelDb[top] - plain->levelDb[mid]) == Approx(-6.0).margin(0.5));
 }

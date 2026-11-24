@@ -128,9 +128,22 @@ float TruePeakLimiter::takeMinGainDb() noexcept
 
 // ---- MasterChain ------------------------------------------------------------------
 
+BiquadCoefficients masterEqCoefficients(std::size_t band, double gainDb, double sampleRate) noexcept
+{
+    const MasterEqBand& b = kMasterEqBands[std::min(band, kMasterEqBandCount - 1)];
+    const double hz = std::min(b.hz, 0.45 * sampleRate);
+    switch (b.shape) {
+    case EqShape::LowShelf: return BiquadCoefficients::lowShelf(hz, b.q, gainDb, sampleRate);
+    case EqShape::HighShelf: return BiquadCoefficients::highShelf(hz, b.q, gainDb, sampleRate);
+    case EqShape::Peak: break;
+    }
+    return BiquadCoefficients::peaking(hz, b.q, gainDb, sampleRate);
+}
+
 void MasterChain::prepare(double sampleRate)
 {
-    limiter_.prepare(sampleRate > 0.0 ? sampleRate : 48000.0);
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    limiter_.prepare(sampleRate_);
     setParams(params_);
     reset();
 }
@@ -139,15 +152,44 @@ void MasterChain::setParams(const MasterParams& params) noexcept
 {
     params_ = params;
     limiter_.setParams(params.limiter, params.ceilingDbtp, params.releaseMs);
+    // New coefficients keep the filters' memory, so moving a gain does not click.
+    for (std::size_t b = 0; b < kMasterEqBandCount; ++b) {
+        const float g = std::isfinite(params.eqGainDb[b])
+                            ? std::clamp(params.eqGainDb[b], static_cast<float>(-kMasterEqMaxDb), static_cast<float>(kMasterEqMaxDb))
+                            : 0.0f;
+        const bool on = params.eq && g != 0.0f;
+        if (on && !eqOn_[b])
+            for (auto& channel : eq_)
+                channel[b].reset();
+        eqOn_[b] = on;
+        const BiquadCoefficients c = masterEqCoefficients(b, g, sampleRate_);
+        for (auto& channel : eq_)
+            channel[b].setCoefficients(c);
+    }
 }
 
 void MasterChain::reset() noexcept
 {
+    for (auto& channel : eq_)
+        for (Biquad& section : channel)
+            section.reset();
     limiter_.reset();
 }
 
 void MasterChain::process(float* left, float* right, int numFrames) noexcept
 {
+    float* channels[2] = {left, right};
+    const int count = left == right ? 1 : 2;
+    for (std::size_t b = 0; b < kMasterEqBandCount; ++b) {
+        if (!eqOn_[b])
+            continue;
+        for (int c = 0; c < count; ++c) {
+            Biquad& section = eq_[static_cast<std::size_t>(c)][b];
+            float* x = channels[c];
+            for (int i = 0; i < numFrames; ++i)
+                x[i] = static_cast<float>(section.process(x[i]));
+        }
+    }
     limiter_.process(left, right, numFrames);
 }
 

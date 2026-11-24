@@ -6,7 +6,8 @@
 // the advice rules.
 //
 //   stem-report <folder | file...> [--json] [--apply-fixes] [--denoise[=dB]]
-//               [--bleed[=light|medium|strong]] [--master[=LUFS]] [--out=folder]
+//               [--bleed[=light|medium|strong]] [--master[=LUFS]] [--target=folder]
+//               [--out=folder]
 //
 // --apply-fixes applies every clean-up fix the advice suggests; --denoise
 // learns each stem's noise profile, looks for hum, and switches on noise
@@ -15,6 +16,9 @@
 // <out>/Media/Processed when --out is given (to listen to), otherwise into a
 // temporary folder removed afterwards. --master sets the master fader for a
 // loudness target (default -14 LUFS) through the master limiter at -1 dBTP.
+// --target builds a tonal-balance target from the audio files in a folder
+// (reference tracks), compares the mix with it and suggests master EQ;
+// with --apply-fixes the EQ is applied.
 // With any of them, the stems are reported again, measured after the
 // processing.
 
@@ -121,6 +125,7 @@ int main(int argc, char** argv)
     std::optional<double> denoiseDb;
     const BleedStrength* bleed = nullptr;
     std::optional<double> masterLufs;
+    std::optional<fs::path> targetDir;
     std::optional<fs::path> out;
     std::vector<fs::path> files;
     for (int i = 1; i < argc; ++i) {
@@ -151,6 +156,10 @@ int main(int argc, char** argv)
             }
             continue;
         }
+        if (arg.rfind("--target=", 0) == 0) {
+            targetDir = utf8ToPath(arg.substr(9));
+            continue;
+        }
         if (arg == "--master" || arg.rfind("--master=", 0) == 0) {
             masterLufs = arg.size() > 9 ? std::atof(arg.c_str() + 9) : -14.0;
             continue;
@@ -170,7 +179,7 @@ int main(int argc, char** argv)
         }
     }
     if (files.empty()) {
-        std::fprintf(stderr, "usage: stem-report <folder | audio files...> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--master[=LUFS]] [--out=folder]\n");
+        std::fprintf(stderr, "usage: stem-report <folder | audio files...> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--master[=LUFS]] [--target=folder] [--out=folder]\n");
         return 2;
     }
     std::sort(files.begin(), files.end());
@@ -205,6 +214,55 @@ int main(int argc, char** argv)
     if (!report) {
         std::fprintf(stderr, "analysis failed: %s\n", report.error().describe().c_str());
         return 1;
+    }
+    if (targetDir) {
+        std::vector<fs::path> references;
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(*targetDir, ec))
+            if (entry.is_regular_file() && isAudio(entry.path()))
+                references.push_back(entry.path());
+        std::sort(references.begin(), references.end());
+        std::vector<std::string> skipped;
+        const auto target = tonalTargetFromFiles(pathToUtf8(targetDir->filename()), references, &skipped);
+        const auto mixProfile = tonalProfileOfMix(model, pool);
+        if (!target || !mixProfile) {
+            std::fprintf(stderr, "tonal comparison failed: %s\n",
+                         (!target ? target.error() : mixProfile.error()).describe().c_str());
+            return 1;
+        }
+        std::array<float, kMasterEqBandCount> current{};
+        for (std::size_t b = 0; b < current.size(); ++b)
+            current[b] = model.master.eq ? static_cast<float>(model.master.eqGainDb[b]) : 0.0f;
+        const TonalComparison cmp = compareTonal(*mixProfile, *target, current);
+        if (!json) {
+            std::printf("Tonal balance against %zu reference(s)%s:\n", target->references.size(),
+                        skipped.empty() ? "" : " (some unreadable)");
+            std::printf("%8s %8s %7s %7s %7s\n", "Band", "Target", "Spread", "Mix", "Diff");
+            for (std::size_t b = 0; b < kTonalBands; ++b)
+                std::printf("%7.0fHz %7.1f %7.1f %7.1f %+7.1f%s\n", kTonalBandHz[b], target->meanDb[b], target->spreadDb[b],
+                            mixProfile->levelDb[b], cmp.deviationDb[b], cmp.outside[b] ? "  *" : "");
+            std::printf("Suggested master EQ (dB): low %+.1f  low-mid %+.1f  mid %+.1f  presence %+.1f  air %+.1f"
+                        "  (deviation %.1f -> %.1f dB)\n\n",
+                        cmp.eqGainDb[0], cmp.eqGainDb[1], cmp.eqGainDb[2], cmp.eqGainDb[3], cmp.eqGainDb[4], cmp.rmsBeforeDb,
+                        cmp.rmsAfterDb);
+        }
+        // The mix again with only the suggested EQ changed, to check the prediction.
+        ProjectModel withEq = model;
+        withEq.master.eq = true;
+        for (std::size_t b = 0; b < kMasterEqBandCount; ++b)
+            withEq.master.eqGainDb[b] = cmp.eqGainDb[b];
+        withEq.master.tonalTarget = toSettings(*target);
+        if (!json)
+            if (const auto after = tonalProfileOfMix(withEq, pool)) {
+                const TonalComparison again = compareTonal(*after, *target, cmp.eqGainDb);
+                std::printf("Measured with the suggested EQ: deviation %.1f dB; per band:", again.rmsBeforeDb);
+                for (std::size_t b = 0; b < kTonalBands; ++b)
+                    std::printf(" %+.1f", again.deviationDb[b]);
+                std::printf("\nCompared again it would suggest: %+.1f %+.1f %+.1f %+.1f %+.1f\n\n", again.eqGainDb[0],
+                            again.eqGainDb[1], again.eqGainDb[2], again.eqGainDb[3], again.eqGainDb[4]);
+            }
+        if (applyFixes)
+            model.master = withEq.master;
     }
     if (applyFixes || denoiseDb || bleed || masterLufs) {
         if (!json) {

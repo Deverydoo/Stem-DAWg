@@ -108,8 +108,52 @@ static MasterSettings masterFromJson(const json& j)
     m.ceilingDbtp = number("ceilingDbtp", m.ceilingDbtp);
     m.releaseMs = number("releaseMs", m.releaseMs);
     m.targetLufs = number("targetLufs", m.targetLufs);
+    if (const auto eq = j.find("eq"); eq != j.end() && eq->is_object()) {
+        if (const auto on = eq->find("enabled"); on != eq->end() && on->is_boolean())
+            m.eq = on->get<bool>();
+        if (const auto gains = eq->find("gainsDb"); gains != eq->end() && gains->is_array())
+            for (std::size_t b = 0; b < m.eqGainDb.size() && b < gains->size(); ++b)
+                if ((*gains)[b].is_number())
+                    m.eqGainDb[b] = (*gains)[b].get<double>();
+    }
+    if (const auto t = j.find("tonalTarget"); t != j.end())
+        m.tonalTarget = tonalTargetFromJson(*t);
     m.clamp();
     return m;
+}
+
+json tonalTargetToJson(const TonalTargetSettings& t)
+{
+    return {{"name", t.name}, {"references", t.references}, {"meanDb", t.meanDb}, {"spreadDb", t.spreadDb}};
+}
+
+TonalTargetSettings tonalTargetFromJson(const json& j)
+{
+    TonalTargetSettings t;
+    if (!j.is_object())
+        return t;
+    const auto numbers = [&](const char* key) {
+        std::vector<double> v;
+        const auto it = j.find(key);
+        if (it == j.end() || !it->is_array())
+            return v;
+        for (const json& x : *it)
+            if (x.is_number())
+                v.push_back(x.get<double>());
+        return v;
+    };
+    if (const auto it = j.find("name"); it != j.end() && it->is_string())
+        t.name = it->get<std::string>();
+    if (const auto it = j.find("references"); it != j.end() && it->is_array())
+        for (const json& r : *it)
+            if (r.is_string())
+                t.references.push_back(r.get<std::string>());
+    t.meanDb = numbers("meanDb");
+    t.spreadDb = numbers("spreadDb");
+    MasterSettings check;
+    check.tonalTarget = std::move(t);
+    check.clamp(); // drops an inconsistent target
+    return check.tonalTarget;
 }
 
 // Missing or malformed values fall back to the defaults; numbers are clamped
@@ -197,11 +241,16 @@ json projectToJson(const ProjectModel& model)
                        {"tempo", {{"bpm", model.tempo.bpm}, {"numerator", model.tempo.numerator}, {"denominator", model.tempo.denominator}}}};
     doc["transport"] = {{"playheadFrames", model.playhead}};
     doc["mixer"] = {{"masterGainDb", model.masterGainDb}};
-    if (!(model.master == MasterSettings{}))
-        doc["mixer"]["master"] = {{"limiter", model.master.limiter},
-                                  {"ceilingDbtp", model.master.ceilingDbtp},
-                                  {"releaseMs", model.master.releaseMs},
-                                  {"targetLufs", model.master.targetLufs}};
+    if (!(model.master == MasterSettings{})) {
+        const MasterSettings& m = model.master;
+        doc["mixer"]["master"] = {{"limiter", m.limiter},
+                                  {"ceilingDbtp", m.ceilingDbtp},
+                                  {"releaseMs", m.releaseMs},
+                                  {"targetLufs", m.targetLufs},
+                                  {"eq", {{"enabled", m.eq}, {"gainsDb", m.eqGainDb}}}};
+        if (!m.tonalTarget.empty())
+            doc["mixer"]["master"]["tonalTarget"] = tonalTargetToJson(m.tonalTarget);
+    }
     if (!model.profileId.empty() || !model.release.empty())
         doc["release"] = {{"profileId", model.profileId}, {"fields", metadataToJson(model.release)}};
 

@@ -13,6 +13,7 @@
 #include <daw/core/Ids.h>
 #include <daw/project/Metadata.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -163,8 +164,24 @@ struct StereoSettings {
     friend bool operator==(const StereoSettings&, const StereoSettings&) = default;
 };
 
-/// The master bus after the summed tracks (milestone 5): a true-peak limiter,
-/// and the loudness the master fader is set for. Off by default.
+/// A tonal-balance target as a project stores it: built from reference
+/// tracks (dsp/TonalBalance) and copied in, so the project compares the same
+/// way on any machine. Per third-octave band from 31.5 Hz to 16 kHz.
+struct TonalTargetSettings {
+    static constexpr std::size_t kBands = 28;
+
+    std::string name;
+    std::vector<std::string> references; // file names, for the user's information
+    std::vector<double> meanDb;          // kBands values: each band's share of the total
+    std::vector<double> spreadDb;        // kBands values: how much the references disagree
+
+    bool empty() const noexcept { return meanDb.empty(); }
+    friend bool operator==(const TonalTargetSettings&, const TonalTargetSettings&) = default;
+};
+
+/// The master bus after the summed tracks (milestone 5): tonal EQ (five fixed
+/// bands, see dsp/MasterChain), a true-peak limiter, the loudness the master
+/// fader is set for, and the tonal target the mix is compared with. Off by default.
 struct MasterSettings {
     static constexpr double kMinCeilingDbtp = -12.0;
     static constexpr double kMaxCeilingDbtp = 0.0;
@@ -172,11 +189,16 @@ struct MasterSettings {
     static constexpr double kMaxReleaseMs = 1000.0;
     static constexpr double kMinTargetLufs = -30.0;
     static constexpr double kMaxTargetLufs = -5.0;
+    static constexpr std::size_t kEqBands = 5; // low shelf 100 Hz, bells 250 Hz, 1 kHz, 3 kHz, high shelf 8 kHz
+    static constexpr double kMaxEqDb = 12.0;
 
     bool limiter = false;
     double ceilingDbtp = -1.0;
     double releaseMs = 100.0;
     double targetLufs = -14.0; // what Match Loudness aims for
+    bool eq = false;
+    std::array<double, kEqBands> eqGainDb{};
+    TonalTargetSettings tonalTarget; // empty: none
 
     /// Limits every value to its range (non-finite values take the defaults).
     void clamp() noexcept;

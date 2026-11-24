@@ -25,6 +25,17 @@ void MasterSettings::clamp() noexcept
     ceilingDbtp = limit(ceilingDbtp, kMinCeilingDbtp, kMaxCeilingDbtp, defaults.ceilingDbtp);
     releaseMs = limit(releaseMs, kMinReleaseMs, kMaxReleaseMs, defaults.releaseMs);
     targetLufs = limit(targetLufs, kMinTargetLufs, kMaxTargetLufs, defaults.targetLufs);
+    for (double& g : eqGainDb)
+        g = limit(g, -kMaxEqDb, kMaxEqDb, 0.0);
+    TonalTargetSettings& t = tonalTarget;
+    const auto finite = [](const std::vector<double>& v) {
+        return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
+    };
+    if (!t.empty() && (t.meanDb.size() != TonalTargetSettings::kBands || t.spreadDb.size() != TonalTargetSettings::kBands
+                       || !finite(t.meanDb) || !finite(t.spreadDb)))
+        t = {};
+    for (double& s : t.spreadDb)
+        s = std::clamp(s, 0.5, 20.0);
 }
 
 void TrackCleanup::clamp() noexcept

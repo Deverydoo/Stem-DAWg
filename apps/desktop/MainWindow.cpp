@@ -514,7 +514,18 @@ void MainWindow::connectSignals()
         masterPanel_->setMatching(false);
         masterPanel_->showMatch(match, target);
     });
-    connect(project_.get(), &ProjectController::projectChanged, this, [this] { masterPanel_->setMatching(false); });
+    connect(project_.get(), &ProjectController::projectChanged, this, [this] {
+        masterPanel_->setMatching(false);
+        masterPanel_->setTonalBusy(false);
+    });
+    connect(masterPanel_, &MasterPanel::newTargetRequested, this, [this](const QString& folder) { project_->buildTonalTarget(folder); });
+    connect(masterPanel_, &MasterPanel::compareRequested, this, [this] { project_->compareTonalBalance(); });
+    connect(project_.get(), &ProjectController::tonalLibraryChanged, this,
+            [this] { masterPanel_->setTargetLibrary(project_->tonalTargetLibrary()); });
+    connect(project_.get(), &ProjectController::tonalBusy, masterPanel_, &MasterPanel::setTonalBusy);
+    connect(project_.get(), &ProjectController::tonalCompared, masterPanel_, &MasterPanel::showComparison);
+    connect(project_.get(), &ProjectController::tonalFailed, masterPanel_, &MasterPanel::showTonalError);
+    masterPanel_->setTargetLibrary(project_->tonalTargetLibrary());
     connect(project_.get(), &ProjectController::loudnessMatchFailed, this, [this](const QString& message) {
         masterPanel_->setMatching(false);
         masterPanel_->showMatchError(message);

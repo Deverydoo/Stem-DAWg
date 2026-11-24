@@ -99,17 +99,29 @@ TEST_CASE("The master bus is written only when set, and clamped when read", "[pr
     CHECK(doc["mixer"]["master"]["ceilingDbtp"] == -0.5);
     CHECK(doc["mixer"]["master"]["releaseMs"] == 150.0);
     CHECK(doc["mixer"]["master"]["targetLufs"] == -10.0);
+    CHECK(doc["mixer"]["master"]["eq"]["enabled"] == true);
+    CHECK(doc["mixer"]["master"]["eq"]["gainsDb"][3] == 2.5);
+    CHECK(doc["mixer"]["master"]["tonalTarget"]["name"] == "Techno refs");
+    CHECK(doc["mixer"]["master"]["tonalTarget"]["meanDb"].size() == 28);
     auto parsed = projectFromJson(doc);
     REQUIRE(parsed.ok());
     CHECK(parsed->master == makeRichProject().master);
 
-    doc["mixer"]["master"] = {{"limiter", "yes"}, {"ceilingDbtp", 6.0}, {"releaseMs", 1.0}, {"targetLufs", "loud"}};
+    doc["mixer"]["master"] = {{"limiter", "yes"},
+                              {"ceilingDbtp", 6.0},
+                              {"releaseMs", 1.0},
+                              {"targetLufs", "loud"},
+                              {"eq", {{"enabled", true}, {"gainsDb", {40.0, "x", -3.0}}}},
+                              {"tonalTarget", {{"name", "short"}, {"meanDb", {1.0, 2.0}}, {"spreadDb", {1.0, 2.0}}}}};
     parsed = projectFromJson(doc);
     REQUIRE(parsed.ok());
     CHECK_FALSE(parsed->master.limiter);
     CHECK(parsed->master.ceilingDbtp == MasterSettings::kMaxCeilingDbtp);
     CHECK(parsed->master.releaseMs == MasterSettings::kMinReleaseMs);
     CHECK(parsed->master.targetLufs == MasterSettings{}.targetLufs);
+    CHECK(parsed->master.eq);
+    CHECK(parsed->master.eqGainDb == std::array<double, 5>{MasterSettings::kMaxEqDb, 0.0, -3.0, 0.0, 0.0});
+    CHECK(parsed->master.tonalTarget.empty()); // two bands instead of 28: dropped
 }
 
 TEST_CASE("Track pan and solo are optional and default to centre and off", "[project][serialize]")

@@ -27,6 +27,9 @@ Result<ProjectModel> parseProject(std::string_view text,
 
 /// A track's clean-up chain as stored in project.json (also used by reports).
 nlohmann::json cleanupToJson(const TrackCleanup& cleanup);
+/// Tonal targets, as stored in projects and in the app's target library.
+nlohmann::json tonalTargetToJson(const TonalTargetSettings& target);
+TonalTargetSettings tonalTargetFromJson(const nlohmann::json& j); // invalid input gives an empty target
 /// Reads a clean-up object; missing or invalid values take their defaults and
 /// numbers are clamped to their ranges.
 TrackCleanup cleanupFromJson(const nlohmann::json& json);

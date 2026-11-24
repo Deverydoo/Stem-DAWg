@@ -64,10 +64,10 @@ Milestone 1, the engineering foundation, is done: the engine, projects, waveform
 - **Stereo repair** ✅ **done:** separated stems carry a wide or out-of-phase low end, and some Suno songs carry the same sound in both channels out of step, so a mono sum loses up to 3.6 dB in the midrange. The clean-up chain gains mono bass (side high-passed below 120 Hz), width, and coherence-guided phase alignment, which brings the channels into step without changing their levels; the stem report measures the low end and the mono sum per range and suggests each fix where it helps. See [M4-Artifact-Repair.md](milestone-4/M4-Artifact-Repair.md#4-stereo-repair-dspstereo-stereoimager-phasealigner).
 
 ### M5: Mastering
-- Genre tonal-balance targets (industrial, EBM, techno first) compared against the mix, with suggested EQ moves.
+- **Tonal-balance targets with suggested EQ moves** ✅ **done:** no genre curves are published that could be shipped, so targets are built from reference tracks the user owns (a folder of industrial, EBM or techno releases): their average per third-octave band and how much they disagree. The mix is compared with the target and a five-band master EQ is fitted to the difference; the prediction is what measuring again reports. See [M5-Mastering.md](milestone-5/M5-Mastering.md#2-tonal-balance-against-reference-tracks-and-the-master-eq-dsptonalbalance).
 - **True-peak limiter and loudness targets** ✅ **done:** a master bus after the summed tracks with a 4x-oversampled true-peak limiter (never more than 0.02 dB over its ceiling on stress signals), and Match Loudness, which sets the master fader for a target (streaming −14, Apple Music −16, CD/Bandcamp −10, club −8 LUFS) through the limiter without asking it for more than 12 dB. See [M5-Mastering.md](milestone-5/M5-Mastering.md).
 - Multiband compression, for masters louder than a peak limiter alone can make them.
-- Reference-track matching (load a commercial track, compare spectrum and loudness).
+- **Reference-track matching** ✅ **done** as part of tonal targets (a target from one track is a match to it); loudness has Match Loudness.
 - Export presets per destination (streaming, Bandcamp, club, CD).
 
 ### M6: Audio to MIDI

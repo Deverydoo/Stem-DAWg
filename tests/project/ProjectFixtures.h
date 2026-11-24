@@ -16,6 +16,9 @@ inline ProjectModel makeRichProject()
     model.tempo = {133.5, 7, 8};
     model.masterGainDb = -1.5;
     model.master = {true, -0.5, 150.0, -10.0};
+    model.master.eq = true;
+    model.master.eqGainDb = {1.5, -2.0, 0.0, 2.5, -1.0};
+    model.master.tonalTarget = {"Techno refs", {"a.wav", "b.flac"}, std::vector<double>(28, -14.0), std::vector<double>(28, 2.0)};
     model.playhead = 123456789;
 
     MediaRef drums;

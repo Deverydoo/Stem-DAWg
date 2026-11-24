@@ -3,8 +3,9 @@
 M5 turns a cleaned-up mix into a release: loud enough for where it is going, never clipping, tonally balanced for its genre. This document covers what is done so far:
 
 - **The master bus** with a **true-peak limiter**, and **loudness matching** to a target.
+- **Tonal balance** against reference tracks you choose, with a **master EQ** and suggested moves.
 
-Tonal-balance targets, multiband compression, reference-track matching and export presets follow (see [the roadmap](../ROADMAP.md#m5-mastering)).
+Multiband compression and export presets follow (see [the roadmap](../ROADMAP.md#m5-mastering)).
 
 ## 1. The master bus, the true-peak limiter and loudness matching (`dsp/MasterChain`, `session/MasteringTools`)
 
@@ -14,7 +15,7 @@ Separated stems are not mixed to a level: they add up to whatever they add up to
 
 ### The master bus
 
-A new stage after the summed tracks, in the engine. The master fader comes before it (the snapshot folds it into every track's gain, after the clean-up chains), so the fader is the drive into the limiter. It runs on everything that is heard and exported: live playback, Export Mix, and the stem report's measurement of the mix. Renders of single tracks (the report's per-stem measurements, noise learning) leave it out (`EngineConfig::masterChain`). It is off by default.
+A new stage after the summed tracks, in the engine: tonal EQ (section 2), then the limiter. The master fader comes before it (the snapshot folds it into every track's gain, after the clean-up chains), so the fader is the drive into the limiter. It runs on everything that is heard and exported: live playback, Export Mix, and the stem report's measurement of the mix. Renders of single tracks (the report's per-stem measurements, noise learning) leave it out (`EngineConfig::masterChain`). It is off by default.
 
 ### The limiter
 
@@ -58,3 +59,48 @@ Without the limit, the search went to +30 dB on the fader and 36 dB of limiting 
 - `daw_engine_tests` `[master]`: the engine's master bus limits the mix and delays it by exactly `masterLatency()`; a seek clears the delay; without `masterChain` nothing changes; no allocation while playing and seeking.
 - `daw_integration_tests` `[master]`: Export Mix with the limiter on but idle is sample-identical to the export without it; a clipping mix exports under the ceiling; Match Loudness reaches −14 LUFS within 0.05 LU under −1 dBTP without changing the project, and the export then measures it; a quiet target needs no limiting; an impossible target stops at 12 dB of limiting; a silent mix is refused.
 - Serialization (written only when set, round trip, clamping) and the snapshot carrying the settings to the engine.
+
+## 2. Tonal balance against reference tracks, and the master EQ (`dsp/TonalBalance`)
+
+### Where the targets come from
+
+A genre target (industrial, EBM, techno) has to come from measuring commercial releases in that genre. Published research gives the general shape of commercial music (a spectrum falling roughly 4.5–5 dB per octave over the midrange, with more low end in electronic music), but no per-genre curves that could be shipped, and inventing them would be guessing. So **targets are built from reference tracks the user owns**: pick a folder of releases you want to sound like, and each one is measured. The target is their average per band, and how much they disagree sets how close the mix must be. This also covers the roadmap's reference-track matching: a target from one track is a match to that track. Targets are saved in the app's data folder (`TonalTargets/*.json`) for every project, and the chosen one is copied into the project, so it compares the same way on any machine.
+
+### The profile
+
+The long-term spectrum in third-octave bands from 31.5 Hz to 16 kHz (8192-point frames, half overlapping), each band's share of the total energy in dB: only the shape counts, not the level. Frames more than 20 dB below the song's loud part (silence, fades, a long quiet intro) are left out.
+
+### The comparison and the suggested EQ
+
+The mix's profile minus the target's mean, per band, lined up on its weighted mean over 100 Hz–8 kHz (so a heavier sub-bass does not make every other band look thin). Bands further off than the references' spread are flagged.
+
+A new **master EQ** sits before the limiter: five broad bands (low shelf 100 Hz, bells at 250 Hz, 1 kHz and 3 kHz, high shelf 8 kHz), for the tonal balance of the whole mix, not surgery. The suggestion is a weighted least-squares fit of its five gains (bands where the references agree count more) to the opposite of the difference. The fit goes through the same lining-up as the comparison, so its predicted result is what measuring the mix again reports; it is limited to ±6 dB and rounded to 0.5 dB.
+
+### What did not work, and why
+
+| Attempt | Result |
+|---|---|
+| Lining up on the median band, but fitting with the best mean offset | The two disagreed once the EQ moved several bands at once: the prediction said 1.6 dB, the remeasured mix 2.0 dB. |
+| Holding the change in the EQ small (regularisation) rather than the EQ itself | Each Compare stopped short and the next one suggested half a dB more: the suggestion crept. Holding the total gains small makes it a fixed point: comparing again after applying it suggests the same EQ. |
+| Checking the suggestion with `stem-report --apply-fixes` | That also applied the report's clean-up fixes (high-passes on two stems), which moved 100–160 Hz by 2 dB: the check now measures the EQ alone. |
+
+### Measured
+
+The 9-stem export against two sets of the user's own released songs (10 and 14 tracks; not genre references, but they show the mechanics):
+
+| References | Main differences | Suggested EQ (low, low mids, mids, presence, air) | Deviation | Remeasured |
+|---|---|---|---|---|
+| Album A (10 tracks) | mids +2.9 dB (800 Hz +6.5), presence −2.3 dB | +1.5, +1.0, −3.5, +3.5, −1.0 dB | 2.4 → 1.6 dB predicted | 1.6 dB |
+| Album B (14 tracks) | | −2.0, +4.0, −2.5, +1.5, −3.0 dB | 3.0 → 2.0 dB predicted | 2.0 dB |
+
+What remains is narrow: an 800 Hz bump in the mix that a broad 1 kHz bell can only partly cancel, and sub-bass under 40 Hz that a 100 Hz shelf cannot separate from the low end.
+
+### In the app
+
+**Master panel → Tonal balance:** pick a target or build one with **New Target...** (a folder of reference tracks), then **Compare** measures the mix as heard (master EQ included). A chart shows the difference per band against the references' spread (orange outside it), a sentence says it in words ("*Against Album A (10 tracks): the mids 2.9 dB stronger, the presence 2.3 dB weaker. Suggested master EQ: ...*"), and **Apply Suggested EQ** sets the master EQ (undoable). The **EQ** group shows the five gains for editing by hand. `stem-report --target=<folder>` does the same from the command line.
+
+### Tests
+
+- `daw_dsp_tests` `[tonal]`: the shelf and bell sections have the gains they promise (no overshoot); the master EQ is transparent at 0 dB and moves the right bands; a profile puts a tone's energy in its band and leaves a quiet stretch out; a target averages its references and records their disagreement; a mix filtered by a known EQ gets each band of its inverse suggested within 1 dB, the remeasured result matches the prediction, and comparing again suggests the same EQ.
+- `daw_integration_tests` `[tonal]`: a target from reference files skips an unreadable one and fails when none can be read; a target stored in a project compares the same way; the mix is profiled as heard, master EQ included.
+- Serialization of the EQ and the target (an inconsistent target is dropped), and the snapshot carrying the EQ to the engine.

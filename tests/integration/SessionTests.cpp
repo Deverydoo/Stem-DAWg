@@ -200,6 +200,11 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     CHECK_FALSE(snapshot->master.limiter);
     model.master = {true, -0.3, 250.0, -9.0};
     CHECK(buildPlaybackSnapshot(model, pool, 48000.0, 9)->master == MasterParams{true, -0.3f, 250.0f});
+    model.master.eq = true;
+    model.master.eqGainDb = {2.0, 0.0, -1.5, 0.0, 3.0};
+    const MasterParams withEq = buildPlaybackSnapshot(model, pool, 48000.0, 10)->master;
+    CHECK(withEq.eq);
+    CHECK(withEq.eqGainDb == std::array<float, 5>{2.0f, 0.0f, -1.5f, 0.0f, 3.0f});
 
     // The transient shaper alone makes a chain.
     TrackCleanup shaperOnly;

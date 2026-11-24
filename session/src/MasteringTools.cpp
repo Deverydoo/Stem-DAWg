@@ -3,7 +3,9 @@
 
 #include <daw/session/MasteringTools.h>
 
+#include <daw/core/Files.h>
 #include <daw/dsp/LoudnessMeter.h>
+#include <daw/media/AudioFileDecoder.h>
 #include <daw/dsp/MasterChain.h>
 #include <daw/session/Renderer.h>
 
@@ -161,6 +163,97 @@ Result<LoudnessMatch> matchLoudness(const ProjectModel& model, const MediaPool& 
     if (options.progress)
         options.progress(1.0);
     return match;
+}
+
+// ---- tonal balance ------------------------------------------------------------
+
+static_assert(TonalTargetSettings::kBands == kTonalBands, "the project and the analysis must agree on the bands");
+static_assert(MasterSettings::kEqBands == kMasterEqBandCount, "the project and the master chain must agree on the EQ");
+
+namespace {
+
+TonalProfile profileOf(const AudioAsset& audio)
+{
+    TonalAnalyzer analyzer(audio.sampleRate);
+    const float* left = audio.channels[0].data();
+    const float* right = audio.numChannels() > 1 ? audio.channels[1].data() : left;
+    analyzer.process(left, right, static_cast<int>(audio.numFrames()));
+    return analyzer.result();
+}
+
+} // namespace
+
+Result<TonalProfile> tonalProfileOfFile(const std::filesystem::path& path, const CancellationToken& cancel)
+{
+    auto decoded = decodeAudioFile(path, {}, cancel);
+    if (!decoded)
+        return decoded.error();
+    const TonalProfile profile = profileOf(**decoded);
+    if (!profile.valid())
+        return makeError(ErrorCode::InvalidArgument, "the file is silent: " + pathToUtf8(path.filename()));
+    return profile;
+}
+
+Result<TonalProfile> tonalProfileOfMix(const ProjectModel& model, const MediaPool& pool, const std::function<void(double)>& progress,
+                                       const CancellationToken& cancel)
+{
+    RenderOptions options;
+    options.progress = progress;
+    auto rendered = renderMix(model, pool, options, cancel);
+    if (!rendered)
+        return rendered.error();
+    const TonalProfile profile = profileOf(*rendered->audio);
+    if (!profile.valid())
+        return makeError(ErrorCode::InvalidArgument, "the mix is silent");
+    return profile;
+}
+
+Result<TonalTarget> tonalTargetFromFiles(const std::string& name, const std::vector<std::filesystem::path>& files,
+                                         std::vector<std::string>* skipped, const std::function<void(double)>& progress,
+                                         const CancellationToken& cancel)
+{
+    std::vector<TonalProfile> profiles;
+    std::vector<std::string> references;
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        if (cancel.isCancelled())
+            return makeError(ErrorCode::Cancelled, "building the target was cancelled");
+        auto profile = tonalProfileOfFile(files[i], cancel);
+        if (profile) {
+            profiles.push_back(*profile);
+            references.push_back(pathToUtf8(files[i].filename()));
+        } else if (skipped != nullptr) {
+            skipped->push_back(pathToUtf8(files[i].filename()));
+        }
+        if (progress)
+            progress(static_cast<double>(i + 1) / static_cast<double>(files.size()));
+    }
+    if (profiles.empty())
+        return makeError(ErrorCode::InvalidArgument, "none of the reference files could be read");
+    return makeTonalTarget(name, std::move(references), profiles);
+}
+
+TonalTargetSettings toSettings(const TonalTarget& target)
+{
+    TonalTargetSettings s;
+    if (!target.valid())
+        return s;
+    s.name = target.name;
+    s.references = target.references;
+    s.meanDb.assign(target.meanDb.begin(), target.meanDb.end());
+    s.spreadDb.assign(target.spreadDb.begin(), target.spreadDb.end());
+    return s;
+}
+
+TonalTarget fromSettings(const TonalTargetSettings& settings)
+{
+    TonalTarget t;
+    if (settings.meanDb.size() != kTonalBands || settings.spreadDb.size() != kTonalBands)
+        return t;
+    t.name = settings.name;
+    t.references = settings.references.empty() ? std::vector<std::string>{settings.name} : settings.references;
+    std::copy(settings.meanDb.begin(), settings.meanDb.end(), t.meanDb.begin());
+    std::copy(settings.spreadDb.begin(), settings.spreadDb.end(), t.spreadDb.begin());
+    return t;
 }
 
 } // namespace daw

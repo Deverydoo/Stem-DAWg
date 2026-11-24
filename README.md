@@ -17,7 +17,7 @@
 
 **Stem DAWg** is a music cleaner and mastering tool. It is not another general-purpose DAW. You load the stems from Suno (or any stem export) or your own recordings, and it helps you remove what ruins them: separation bleed, noise beds, fan hiss, harsh and phasey high ends, stems that sum into clipping. Then you balance and master the result.
 
-> **Status: early development (Milestones 1–4 done).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), suppresses bleed between stems, sharpens soft AI drums, tames harsh resonances and generator whine, repairs the stereo image, masters to a loudness target through a true-peak limiter, and exports the finished mix today. The rest of mastering (M5) is next; see the [roadmap](docs/ROADMAP.md).
+> **Status: early development (Milestones 1–4 done).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), suppresses bleed between stems, sharpens soft AI drums, tames harsh resonances and generator whine, repairs the stereo image, masters to a loudness target through a true-peak limiter, compares the tonal balance with reference tracks you choose, and exports the finished mix today. The rest of mastering (M5) is next; see the [roadmap](docs/ROADMAP.md).
 
 ## What works today
 
@@ -34,6 +34,7 @@
 - **Real-time engine:** zero allocations in the audio callback (enforced by tests), sample-exact playback, WASAPI / DirectSound (ASIO optional).
 - **Projects:** versioned `project.json`, atomic saves, backups, autosave and recovery, stems copied into the project folder.
 - **Master bus and loudness targets:** a true-peak limiter after the summed tracks keeps the master under its ceiling (−1 dBTP by default), inter-sample peaks included. **Match Loudness** sets the master fader so the master reaches a target (streaming −14, Apple Music −16, CD/Bandcamp −10, club −8 LUFS) through the limiter, and says plainly when a target would take more limiting than the mix can stand.
+- **Tonal balance against your references:** point it at a folder of releases you want to sound like; it measures them, compares the mix per third of an octave, and suggests (and applies) master EQ moves. No genre curves are invented: the target is your references.
 - **Export Mix:** renders the whole song at the project's sample rate to WAV (24-bit, 16-bit dithered, 32-bit float), master bus included, with clipping detection.
 - **Artist profiles:** enter your artist details once (artist, label, copyright, genre, website, cover art) and every export gets RIFF INFO and ID3v2.3 tags plus embedded artwork. Switch between artists in the toolbar.
 - **AI built in:** ONNX Runtime inference and background analyzers for levels, transients, spectrum and an inference probe. These are the foundation for AI-assisted cleaning and tuning.
@@ -87,7 +88,7 @@ A git-ignored `CMakeUserPresets.json` can hard-code your Qt path (for example `l
 - **Undo:** Ctrl+Z undoes any edit (faders, mute, solo, clean-up, imports, renames, deletions); Ctrl+Y redoes. A fader drag is one step.
 - **Track headers:** double-click the name to rename; right-click for Rename, Clean-up and Delete Track. C opens the track's clean-up (blue when on); M mutes; S solos that track alone (Ctrl+click S to solo several; mute wins); the fader sets volume (double-click for 0 dB); the knob pans (double-click to centre).
 - **Clean-up** (right panel, Ctrl+L): bleed suppression (pick a strength, then This Track or All Stems; Original switches back), voice denoise for speech (Apply renders a cleaned copy, Original switches back; the first use downloads the model), high-pass, hum removal (Detect finds it), noise reduction (Learn Noise first; if the track's quietest moments are not the noise you want gone, select a stretch of pure noise and click Learn from Selection), stereo (mono below a frequency, width, align phase), harshness (the most to cut at 2–6 kHz and at 8–17 kHz), expander, transients (attack and sustain) and DC removal for the selected track, with a gain-reduction meter. **Listen to Removed** (Ctrl+Shift+B) plays only what the clean-up removes: if you hear music in it, back off. **Apply Fix** / **Apply All Fixes** in the stem report fill it in from the advice. **Bypass Clean-up** (Ctrl+B) plays everything without it, for comparison; exports always include it.
-- **Master and CLIP:** Suno stems often add up above 0 dBFS. Open the **Master** panel (Ctrl+M), pick a loudness target and click **Match Loudness**: it switches on the limiter and sets the Master fader. Or pull the Master fader down until the CLIP light stays off.
+- **Master and CLIP:** Suno stems often add up above 0 dBFS. Open the **Master** panel (Ctrl+M), pick a loudness target and click **Match Loudness**: it switches on the limiter and sets the Master fader. Or pull the Master fader down until the CLIP light stays off. **Tonal balance** in the same panel: **New Target...** (a folder of reference tracks), **Compare**, **Apply Suggested EQ**.
 - **Settings → Artist Profiles**, then **File → Export Mix** (Ctrl+E).
 - **Stem Report** (bottom panel) runs on its own after import. Run it again with **Analyze** or Ctrl+R after changing faders. Click an advice item to find its stem.
 - **Loudness** (transport bar): M, S and I are momentary, short-term and integrated LUFS; TP is the true peak. Play the song from the start for its integrated loudness; click the readout to restart the measurement.
@@ -103,7 +104,7 @@ A git-ignored `CMakeUserPresets.json` can hard-code your Qt path (for example `l
 - [Editing and playback](docs/milestone-2/M2-Editing-and-Playback.md): undo/redo, track editing, declick, RF64 export
 - [Milestone 3: noise removal](docs/milestone-3/M3-Noise-Removal.md): spectral noise reduction, hum removal, voice denoise, Listen to Removed
 - [Milestone 4: AI-artifact repair](docs/milestone-4/M4-Artifact-Repair.md): bleed suppression between stems, transient restoration, harshness and shimmer control, stereo repair
-- [Milestone 5: Mastering](docs/milestone-5/M5-Mastering.md): the master bus, true-peak limiter and loudness matching
+- [Milestone 5: Mastering](docs/milestone-5/M5-Mastering.md): the master bus, true-peak limiter and loudness matching, tonal balance against reference tracks
 - [Milestone 1 technical specification](docs/milestone-1/M1-Technical-Specification.md): architecture, real-time rules, file formats
 - [Implementation sequence](docs/milestone-1/M1-Implementation-Sequence.md)
 - [Contributing](CONTRIBUTING.md)
