@@ -106,6 +106,13 @@ std::unique_ptr<PlaybackSnapshot> buildPlaybackSnapshot(const ProjectModel& mode
                             .eq = m.eq};
         for (std::size_t b = 0; b < m.eqGainDb.size(); ++b)
             snapshot->master.eqGainDb[b] = static_cast<float>(m.eqGainDb[b]);
+        snapshot->master.multiband.enabled = m.multiband;
+        snapshot->master.clipper = m.clipper;
+        snapshot->master.clipBelowCeilingDb = static_cast<float>(m.clipBelowCeilingDb);
+        for (std::size_t b = 0; b < m.multibandRatio.size(); ++b) {
+            snapshot->master.multiband.thresholdDb[b] = static_cast<float>(m.multibandThresholdDb[b]);
+            snapshot->master.multiband.ratio[b] = static_cast<float>(m.multibandRatio[b]);
+        }
     }
 
     for (const Track& track : model.tracks) {

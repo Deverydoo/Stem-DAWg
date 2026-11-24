@@ -205,6 +205,17 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     const MasterParams withEq = buildPlaybackSnapshot(model, pool, 48000.0, 10)->master;
     CHECK(withEq.eq);
     CHECK(withEq.eqGainDb == std::array<float, 5>{2.0f, 0.0f, -1.5f, 0.0f, 3.0f});
+    model.master.multiband = true;
+    model.master.multibandThresholdDb = {-15.0, -18.0, -21.0};
+    model.master.multibandRatio = {2.0, 3.0, 4.0};
+    model.master.clipper = true;
+    model.master.clipBelowCeilingDb = 2.0;
+    const MasterParams full = buildPlaybackSnapshot(model, pool, 48000.0, 11)->master;
+    CHECK(full.multiband.enabled);
+    CHECK(full.multiband.thresholdDb == std::array<float, 3>{-15.0f, -18.0f, -21.0f});
+    CHECK(full.multiband.ratio == std::array<float, 3>{2.0f, 3.0f, 4.0f});
+    CHECK(full.clipper);
+    CHECK(full.clipBelowCeilingDb == 2.0f);
 
     // The transient shaper alone makes a chain.
     TrackCleanup shaperOnly;

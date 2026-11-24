@@ -27,6 +27,11 @@ void MasterSettings::clamp() noexcept
     targetLufs = limit(targetLufs, kMinTargetLufs, kMaxTargetLufs, defaults.targetLufs);
     for (double& g : eqGainDb)
         g = limit(g, -kMaxEqDb, kMaxEqDb, 0.0);
+    for (std::size_t b = 0; b < kMultibandBands; ++b) {
+        multibandThresholdDb[b] = limit(multibandThresholdDb[b], kMinThresholdDb, 0.0, defaults.multibandThresholdDb[b]);
+        multibandRatio[b] = limit(multibandRatio[b], 1.0, kMaxRatio, defaults.multibandRatio[b]);
+    }
+    clipBelowCeilingDb = limit(clipBelowCeilingDb, 0.0, 6.0, defaults.clipBelowCeilingDb);
     TonalTargetSettings& t = tonalTarget;
     const auto finite = [](const std::vector<double>& v) {
         return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });

@@ -3,8 +3,8 @@
 
 #pragma once
 
-// The master bus (milestone 5): tonal EQ, the true-peak limiter, the
-// loudness target and the tonal-balance target.
+// The master bus (milestone 5): tonal EQ, multiband compressor, soft
+// clipper, true-peak limiter, the loudness target and the tonal-balance target.
 //
 // Match Loudness sets the master fader so the mastered mix reaches the
 // loudness target through the limiter. Compare measures the mix's tonal
@@ -66,6 +66,11 @@ private:
 
     QGroupBox* eq_ = nullptr;
     std::array<QDoubleSpinBox*, daw::MasterSettings::kEqBands> eqGains_{};
+    QGroupBox* multiband_ = nullptr;
+    std::array<QDoubleSpinBox*, daw::MasterSettings::kMultibandBands> mbThreshold_{};
+    std::array<QDoubleSpinBox*, daw::MasterSettings::kMultibandBands> mbRatio_{};
+    QGroupBox* clipper_ = nullptr;
+    QDoubleSpinBox* clipBelow_ = nullptr;
     QGroupBox* limiter_ = nullptr;
     QDoubleSpinBox* ceiling_ = nullptr;
     QDoubleSpinBox* release_ = nullptr;

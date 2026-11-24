@@ -103,6 +103,8 @@ TEST_CASE("The master bus is written only when set, and clamped when read", "[pr
     CHECK(doc["mixer"]["master"]["eq"]["gainsDb"][3] == 2.5);
     CHECK(doc["mixer"]["master"]["tonalTarget"]["name"] == "Techno refs");
     CHECK(doc["mixer"]["master"]["tonalTarget"]["meanDb"].size() == 28);
+    CHECK(doc["mixer"]["master"]["multiband"]["ratios"][2] == 3.0);
+    CHECK(doc["mixer"]["master"]["clipper"]["belowCeilingDb"] == 1.5);
     auto parsed = projectFromJson(doc);
     REQUIRE(parsed.ok());
     CHECK(parsed->master == makeRichProject().master);
@@ -112,7 +114,9 @@ TEST_CASE("The master bus is written only when set, and clamped when read", "[pr
                               {"releaseMs", 1.0},
                               {"targetLufs", "loud"},
                               {"eq", {{"enabled", true}, {"gainsDb", {40.0, "x", -3.0}}}},
-                              {"tonalTarget", {{"name", "short"}, {"meanDb", {1.0, 2.0}}, {"spreadDb", {1.0, 2.0}}}}};
+                              {"tonalTarget", {{"name", "short"}, {"meanDb", {1.0, 2.0}}, {"spreadDb", {1.0, 2.0}}}},
+                              {"multiband", {{"enabled", true}, {"thresholdsDb", {-80.0, 5.0}}, {"ratios", {0.5, 50.0, 2.5}}}},
+                              {"clipper", {{"enabled", true}, {"belowCeilingDb", 20.0}}}};
     parsed = projectFromJson(doc);
     REQUIRE(parsed.ok());
     CHECK_FALSE(parsed->master.limiter);
@@ -122,6 +126,11 @@ TEST_CASE("The master bus is written only when set, and clamped when read", "[pr
     CHECK(parsed->master.eq);
     CHECK(parsed->master.eqGainDb == std::array<double, 5>{MasterSettings::kMaxEqDb, 0.0, -3.0, 0.0, 0.0});
     CHECK(parsed->master.tonalTarget.empty()); // two bands instead of 28: dropped
+    CHECK(parsed->master.multiband);
+    CHECK(parsed->master.multibandThresholdDb == std::array<double, 3>{MasterSettings::kMinThresholdDb, 0.0, -20.0});
+    CHECK(parsed->master.multibandRatio == std::array<double, 3>{1.0, MasterSettings::kMaxRatio, 2.5});
+    CHECK(parsed->master.clipper);
+    CHECK(parsed->master.clipBelowCeilingDb == 6.0);
 }
 
 TEST_CASE("Track pan and solo are optional and default to centre and off", "[project][serialize]")

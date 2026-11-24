@@ -547,8 +547,7 @@ void ProjectController::matchLoudness(double targetLufs)
                         const double gain = std::clamp(match->masterGainDb, daw::kSilenceDb, 12.0);
                         applyEdit(tr("Match Loudness"), {}, [&](daw::ProjectModel& m) {
                             m.masterGainDb = gain;
-                            m.master = master;
-                            m.master.targetLufs = targetLufs;
+                            m.master = daw::applyLoudnessMatch(master, *match, targetLufs);
                             return true;
                         });
                         Q_EMIT mixerChanged();

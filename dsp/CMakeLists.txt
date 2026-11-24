@@ -8,7 +8,9 @@ daw_add_module(dsp
         src/Fft.cpp
         src/TruePeak.cpp
         src/LoudnessMeter.cpp
+        src/Clipper.cpp
         src/MasterChain.cpp
+        src/Multiband.cpp
         src/TonalBalance.cpp
         src/CleanupChain.cpp
         src/ResonanceSuppressor.cpp

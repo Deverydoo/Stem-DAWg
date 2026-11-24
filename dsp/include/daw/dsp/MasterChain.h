@@ -3,8 +3,8 @@
 
 #pragma once
 
-// The master bus, after the tracks are summed: tonal EQ -> true-peak
-// limiter. The master fader comes before it (the snapshot folds it into
+// The master bus, after the tracks are summed: tonal EQ -> multiband
+// compressor (Multiband.h) -> soft clipper (Clipper.h) -> true-peak limiter. The master fader comes before it (the snapshot folds it into
 // every track's gains), so it is the drive into the limiter. See
 // docs/milestone-5/M5-Mastering.md.
 //
@@ -32,6 +32,8 @@
 // switching it does not shift the audio. Real-time safe after prepare().
 
 #include <daw/dsp/Biquad.h>
+#include <daw/dsp/Clipper.h>
+#include <daw/dsp/Multiband.h>
 #include <daw/dsp/TruePeak.h>
 
 #include <array>
@@ -112,6 +114,9 @@ struct MasterParams {
     float releaseMs = 100.0f;
     bool eq = false;
     std::array<float, kMasterEqBandCount> eqGainDb{};
+    MultibandParams multiband;
+    bool clipper = false;
+    float clipBelowCeilingDb = 1.0f; // the clipper's level under the limiter's ceiling
 
     friend bool operator==(const MasterParams&, const MasterParams&) = default;
 };
@@ -119,19 +124,26 @@ struct MasterParams {
 class MasterChain {
 public:
     void prepare(double sampleRate);
-    int latency() const noexcept { return limiter_.latency(); }
+    /// The clipper's and the limiter's delays: the same whatever is switched on.
+    int latency() const noexcept { return SoftClipper::latency() + limiter_.latency(); }
     void setParams(const MasterParams& params) noexcept;
     const MasterParams& params() const noexcept { return params_; }
     /// Clears the delay and the limiter.
     void reset() noexcept;
     void process(float* left, float* right, int numFrames) noexcept;
     float takeMinGainDb() noexcept { return limiter_.takeMinGainDb(); }
+    /// Deepest multiband gain reduction per band since the last call, dB (<= 0).
+    std::array<float, kMultibandBands> takeMultibandGainDb() noexcept { return multiband_.takeMinGainDb(); }
+    /// Share of (oversampled) samples the clipper touched since the last call.
+    double takeClippedFraction() noexcept { return clipper_.takeClippedFraction(); }
 
 private:
     MasterParams params_;
     double sampleRate_ = 48000.0;
     std::array<std::array<Biquad, kMasterEqBandCount>, 2> eq_{};
     std::array<bool, kMasterEqBandCount> eqOn_{}; // bands with a gain
+    MultibandCompressor multiband_;
+    SoftClipper clipper_;
     TruePeakLimiter limiter_;
 };
 

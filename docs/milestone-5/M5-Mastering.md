@@ -4,8 +4,9 @@ M5 turns a cleaned-up mix into a release: loud enough for where it is going, nev
 
 - **The master bus** with a **true-peak limiter**, and **loudness matching** to a target.
 - **Tonal balance** against reference tracks you choose, with a **master EQ** and suggested moves.
+- **Louder masters:** a **soft clipper** for loudness, and a **multiband compressor** for control.
 
-Multiband compression and export presets follow (see [the roadmap](../ROADMAP.md#m5-mastering)).
+Export presets follow (see [the roadmap](../ROADMAP.md#m5-mastering)).
 
 ## 1. The master bus, the true-peak limiter and loudness matching (`dsp/MasterChain`, `session/MasteringTools`)
 
@@ -15,7 +16,7 @@ Separated stems are not mixed to a level: they add up to whatever they add up to
 
 ### The master bus
 
-A new stage after the summed tracks, in the engine: tonal EQ (section 2), then the limiter. The master fader comes before it (the snapshot folds it into every track's gain, after the clean-up chains), so the fader is the drive into the limiter. It runs on everything that is heard and exported: live playback, Export Mix, and the stem report's measurement of the mix. Renders of single tracks (the report's per-stem measurements, noise learning) leave it out (`EngineConfig::masterChain`). It is off by default.
+A new stage after the summed tracks, in the engine: tonal EQ (section 2), multiband compressor and soft clipper (section 3), then the limiter. The master fader comes before it (the snapshot folds it into every track's gain, after the clean-up chains), so the fader is the drive into the limiter. It runs on everything that is heard and exported: live playback, Export Mix, and the stem report's measurement of the mix. Renders of single tracks (the report's per-stem measurements, noise learning) leave it out (`EngineConfig::masterChain`). It is off by default.
 
 ### The limiter
 
@@ -104,3 +105,53 @@ What remains is narrow: an 800 Hz bump in the mix that a broad 1 kHz bell can on
 - `daw_dsp_tests` `[tonal]`: the shelf and bell sections have the gains they promise (no overshoot); the master EQ is transparent at 0 dB and moves the right bands; a profile puts a tone's energy in its band and leaves a quiet stretch out; a target averages its references and records their disagreement; a mix filtered by a known EQ gets each band of its inverse suggested within 1 dB, the remeasured result matches the prediction, and comparing again suggests the same EQ.
 - `daw_integration_tests` `[tonal]`: a target from reference files skips an unreadable one and fails when none can be read; a target stored in a project compares the same way; the mix is profiled as heard, master EQ included.
 - Serialization of the EQ and the target (an inconsistent target is dropped), and the snapshot carrying the EQ to the engine.
+
+## 3. Louder masters: the multiband compressor and the soft clipper (`dsp/Multiband`, `dsp/Clipper`)
+
+### What actually limits a loud master
+
+Section 1 left the 9-stem export at −9.5 LUFS for a −8 LUFS target, the limiter at its 12 dB budget. The plan was a multiband compressor before the limiter. Measuring first, with the master fader pushed 6–12 dB into the limiter:
+
+| Before the limiter | Fader | Loudness | Limiter gain reduction: deepest / typical (median) |
+|---|---|---|---|
+| nothing | +6 dB | −9.45 LUFS | 12.0 / 3.2 dB |
+| nothing | +12 dB | −8.96 LUFS | 18.0 / 9.2 dB |
+| multiband 2:1 | +10 dB | −8.93 LUFS | 12.5 / 5.9 dB |
+| multiband 4:1 | +10 dB | −8.94 LUFS | 12.4 / 5.4 dB |
+
+Six more decibels of drive bought half a loudness unit: the limiter's typical gain reduction rose almost one for one. Compression moved work from the limiter to the compressor but did not change the result. What pins the mix near −9 LUFS is the difference between peak and body within a few milliseconds: the attack of a kick, the top of a bass waveform. No gain that moves over tens of milliseconds, limiter release or compressor, can touch it. Rounding off those millisecond peaks can:
+
+| Before the limiter | Fader | Loudness | Loudness range | Limiter | Samples clipped |
+|---|---|---|---|---|---|
+| nothing | +4 dB | −9.98 LUFS | 4.3 LU | up to 10 dB | — |
+| narrow-knee clipper 1 dB under the ceiling | +4 dB | −8.41 LUFS | 5.9 LU | idle | 2.2 % |
+
+The clipper bought 1.6 LU **and kept the song's dynamics** (loudness range 5.9 against 4.3 LU), while the limiter went idle. Clipping before the limiter is standard practice in loud electronic masters. So the roadmap's "multiband compression for louder masters" became two tools: a multiband compressor for control, and a soft clipper for loudness.
+
+### The soft clipper
+
+Before the limiter. It oversamples 4x (193-tap linear-phase windowed-sinc filters, about 65 dB of image rejection), so the clipping's harmonics do not fold back into the audible band: a 9 kHz tone clipped by 6 dB leaves its folded third harmonic (21 kHz) more than 55 dB down, where it would be about −20 dB without oversampling. The curve is the input up to 1 dB under the clip level, then a tanh approach that never passes it. The clip level sits 1 dB under the limiter's ceiling (0–6 dB, adjustable), leaving the limiter room for the overshoot the filters bring back (a clipped high tone filtered back into the band is mostly its fundamental, about 4/π of the clip level). Its delay (48 samples) is the same when it is off (a plain delay), so switching it does not shift the audio. It costs about 1.2 % of one CPU core.
+
+### The multiband compressor
+
+Three bands split at 120 Hz and 2.5 kHz (Linkwitz-Riley, 24 dB/octave; the low band also passes an all-pass at the upper crossover, so the bands add back up flat in magnitude). Per band, stereo-linked: a 10 ms RMS detector, a soft knee (6 dB), threshold and ratio, attack and release slower for the low band (30/200 ms, 15/150 ms, 5/100 ms) so a bass waveform is not shaped. No delay, no make-up gain (the master fader sets the level). For taming a boomy low end or harsh loud passages; about 0.3 % of a CPU core.
+
+### Match Loudness with the clipper
+
+The limiter alone first. If a setting past its 12 dB budget is still short of the target, louder settings can only need more, so the clipper joins at once, within a second budget: it may touch at most **2 % of the samples**. Where that budget runs out is known from the mix itself: one pass over the oversampled mix finds the level 2 % of its samples exceed, which puts the search right at the edge (4–5 trials instead of 11–16, about 25 s for a 6:21 song). The project's own multiband settings are part of the sound; Match Loudness does not change them. On the 9-stem export:
+
+| Target | Result | Loudness range | Limiter | Clipper |
+|---|---|---|---|---|
+| −10 LUFS | −10.0 LUFS (limiter alone) | 4.3 LU | 9.9 dB | off |
+| −9 LUFS | −9.0 LUFS | 6.0 LU | idle | 1.5 % of samples |
+| −8 LUFS | −8.6 LUFS, not reached | 5.9 LU | idle | 2.0 % (the budget) |
+
+### In the app
+
+Master panel: **Multiband** (threshold and ratio per band) and **Clipper** (clip level under the ceiling) groups; Match Loudness says when it switched the clipper on and how much of the song it touches. The project file stores `multiband {enabled, thresholdsDb[3], ratios[3]}` and `clipper {enabled, belowCeilingDb}` in `mixer.master`.
+
+### Tests
+
+- `daw_dsp_tests` `[clipper]`, `[multiband]`: the clipper off is an exact delay; under its knee it passes the audio within the filters' ripple; a clipped 9 kHz tone stays near the clip level with its folded harmonic over 55 dB down; the share it touches matches the share predicted from the signal (2 % ± 0.2); the master chain with the clipper never passes the ceiling. The multiband's bands add back up flat at 40 Hz–8 kHz; a band compresses by the static curve (10 dB over at 2:1 comes out 5 dB down) and the others stay (within the crossovers' overlap); no allocation.
+- `daw_integration_tests` `[master]`: Match Loudness reaches −14 LUFS without the clipper; for −5 LUFS on a dense mix it adds the clipper, stops at both budgets and says so, and the export of the result measures what the match promised.
+- Serialization (round trip, clamping) and the snapshot for both.

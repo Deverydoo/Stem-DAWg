@@ -71,6 +71,24 @@ struct BiquadCoefficients {
         return c;
     }
 
+    /// All-pass section: unity gain, phase turning through 180 degrees at
+    /// `hz`. With q = 1/sqrt(2) it has the phase of a Linkwitz-Riley
+    /// low-pass plus high-pass pair at `hz` (used to keep crossover bands in step).
+    static BiquadCoefficients allPass(double hz, double q, double sampleRate) noexcept
+    {
+        const double w0 = 2.0 * std::numbers::pi * hz / sampleRate;
+        const double cosW = std::cos(w0);
+        const double alpha = std::sin(w0) / (2.0 * q);
+        const double a0 = 1.0 + alpha;
+        BiquadCoefficients c;
+        c.b0 = (1.0 - alpha) / a0;
+        c.b1 = -2.0 * cosW / a0;
+        c.b2 = 1.0;
+        c.a1 = c.b1;
+        c.a2 = c.b0;
+        return c;
+    }
+
     /// Low shelf: `gainDb` below `hz` (the midpoint of the transition); q = 1/sqrt(2) is the steepest without overshoot.
     static BiquadCoefficients lowShelf(double hz, double q, double gainDb, double sampleRate) noexcept
     {

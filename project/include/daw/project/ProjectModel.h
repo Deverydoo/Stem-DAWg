@@ -180,8 +180,9 @@ struct TonalTargetSettings {
 };
 
 /// The master bus after the summed tracks (milestone 5): tonal EQ (five fixed
-/// bands, see dsp/MasterChain), a true-peak limiter, the loudness the master
-/// fader is set for, and the tonal target the mix is compared with. Off by default.
+/// bands, see dsp/MasterChain), a three-band compressor (dsp/Multiband), a
+/// true-peak limiter, the loudness the master fader is set for, and the tonal
+/// target the mix is compared with. Off by default.
 struct MasterSettings {
     static constexpr double kMinCeilingDbtp = -12.0;
     static constexpr double kMaxCeilingDbtp = 0.0;
@@ -191,6 +192,9 @@ struct MasterSettings {
     static constexpr double kMaxTargetLufs = -5.0;
     static constexpr std::size_t kEqBands = 5; // low shelf 100 Hz, bells 250 Hz, 1 kHz, 3 kHz, high shelf 8 kHz
     static constexpr double kMaxEqDb = 12.0;
+    static constexpr std::size_t kMultibandBands = 3; // split at 120 Hz and 2.5 kHz
+    static constexpr double kMinThresholdDb = -60.0;
+    static constexpr double kMaxRatio = 10.0;
 
     bool limiter = false;
     double ceilingDbtp = -1.0;
@@ -199,6 +203,11 @@ struct MasterSettings {
     bool eq = false;
     std::array<double, kEqBands> eqGainDb{};
     TonalTargetSettings tonalTarget; // empty: none
+    bool multiband = false;
+    std::array<double, kMultibandBands> multibandThresholdDb{-20.0, -20.0, -20.0}; // RMS, dBFS
+    std::array<double, kMultibandBands> multibandRatio{2.0, 2.0, 2.0};
+    bool clipper = false;
+    double clipBelowCeilingDb = 1.0; // the clipper's level under the ceiling, 0 .. 6
 
     /// Limits every value to its range (non-finite values take the defaults).
     void clamp() noexcept;

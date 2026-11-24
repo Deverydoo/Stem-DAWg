@@ -15,8 +15,12 @@
 //
 // The limiter is never asked for more than kMaxLimiterReductionDb: beyond
 // that a peak limiter audibly crushes the mix (on a Suno stem mix, -8 LUFS
-// would take 36 dB). A target past that point is reported as not reached,
-// with the loudest master within the limit.
+// would take 36 dB). When the limiter alone cannot reach the target within
+// that, the soft clipper joins (it rounds off the millisecond peaks a
+// limiter cannot touch), touching at most kMaxClippedShare of the samples.
+// A target still out of reach is reported as not reached, with the loudest
+// master within both limits. The project's own multiband settings are part
+// of the sound; Match Loudness does not change them.
 
 #include <daw/core/CancellationToken.h>
 #include <daw/core/Result.h>
@@ -46,6 +50,7 @@ inline constexpr LoudnessPreset kLoudnessPresets[] = {
 };
 
 inline constexpr double kMaxLimiterReductionDb = 12.0;
+inline constexpr double kMaxClippedShare = 0.02; // of the (oversampled) samples
 
 struct LoudnessMatch {
     double mixLufs = 0.0;          // the mix with the master fader at 0 dB, before the master bus
@@ -58,8 +63,14 @@ struct LoudnessMatch {
     int trials = 0;                // passes of the limiter over the mix
     bool reached = false;          // within 0.05 LU of the target
     bool limited = false;          // not reached because it would take more than kMaxLimiterReductionDb
+    bool clipper = false;          // the soft clipper was needed
+    double clippedShare = 0.0;     // share of samples it touches
     double seconds = 0.0;
 };
+
+/// The master settings a match leads to: the limiter on (from `master`),
+/// the loudness target, and the clipper if it was needed.
+MasterSettings applyLoudnessMatch(MasterSettings master, const LoudnessMatch& match, double targetLufs);
 
 struct LoudnessMatchOptions {
     std::function<void(double)> progress; // 0..1, from the calling thread

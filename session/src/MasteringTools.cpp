@@ -31,26 +31,50 @@ struct Trial {
     double truePeakDbtp = kLoudnessFloor;
     double loudnessRangeLu = 0.0;
     double maxReductionDb = 0.0;
+    double clippedShare = 0.0;
+
+    bool withinBudget() const noexcept
+    {
+        return maxReductionDb >= -kMaxLimiterReductionDb && clippedShare <= kMaxClippedShare;
+    }
 };
 
-// The mastered mix at a master fader of `gainDb`: the limiter and a loudness
-// meter over the rendered mix.
-Trial runTrial(const AudioAsset& mix, double gainDb, const MasterSettings& master, const CancellationToken& cancel, bool& cancelled)
+// The master chain as the project has it (its multiband compressor runs
+// after the fader, as in playback), with the limiter on and the clipper as asked.
+MasterParams trialParams(const MasterSettings& master, bool clipper)
+{
+    MasterParams p;
+    p.limiter = true;
+    p.ceilingDbtp = static_cast<float>(master.ceilingDbtp);
+    p.releaseMs = static_cast<float>(master.releaseMs);
+    p.multiband.enabled = master.multiband;
+    for (std::size_t b = 0; b < kMultibandBands; ++b) {
+        p.multiband.thresholdDb[b] = static_cast<float>(master.multibandThresholdDb[b]);
+        p.multiband.ratio[b] = static_cast<float>(master.multibandRatio[b]);
+    }
+    p.clipper = clipper;
+    p.clipBelowCeilingDb = static_cast<float>(master.clipBelowCeilingDb);
+    return p;
+}
+
+// The mastered mix at a master fader of `gainDb`: the master chain and a
+// loudness meter over the rendered mix (which has the EQ already).
+Trial runTrial(const AudioAsset& mix, double gainDb, const MasterParams& params, const CancellationToken& cancel, bool& cancelled)
 {
     constexpr int block = 4096;
     const double rate = mix.sampleRate;
     MasterChain chain;
     chain.prepare(rate);
-    chain.setParams({.limiter = true,
-                     .ceilingDbtp = static_cast<float>(master.ceilingDbtp),
-                     .releaseMs = static_cast<float>(master.releaseMs)});
+    chain.setParams(params);
+    chain.reset();
     LoudnessMeter meter;
     meter.prepare(rate, 2, true);
     std::vector<float> left(block), right(block);
     const auto gain = static_cast<float>(std::pow(10.0, gainDb / 20.0));
     const std::int64_t frames = mix.numFrames();
-    const std::int64_t total = frames + chain.latency(); // flush the limiter's delay
-    float reduction = 0.0f;
+    const std::int64_t total = frames + chain.latency(); // flush the chain's delay
+    Trial t;
+    t.gainDb = gainDb;
     for (std::int64_t done = 0; done < total; done += block) {
         if (cancel.isCancelled()) {
             cancelled = true;
@@ -65,14 +89,77 @@ Trial runTrial(const AudioAsset& mix, double gainDb, const MasterSettings& maste
                 inside ? mix.channels[mix.numChannels() > 1 ? 1 : 0][static_cast<std::size_t>(at)] * gain : 0.0f;
         }
         chain.process(left.data(), right.data(), n);
-        reduction = std::min(reduction, chain.takeMinGainDb());
-        // The first latency() frames out of the limiter are its empty delay.
+        t.maxReductionDb = std::min(t.maxReductionDb, static_cast<double>(chain.takeMinGainDb()));
+        // The first latency() frames out of the chain are its empty delay.
         const int skip = static_cast<int>(std::clamp<std::int64_t>(chain.latency() - done, 0, n));
         const float* outs[2] = {left.data() + skip, right.data() + skip};
         meter.process(outs, 2, n - skip);
     }
+    t.clippedShare = chain.takeClippedFraction();
     const LoudnessReading& r = meter.reading();
-    return {gainDb, r.integratedLufs, r.truePeakDbtp, r.loudnessRangeLu, reduction};
+    t.lufs = r.integratedLufs;
+    t.truePeakDbtp = r.truePeakDbtp;
+    t.loudnessRangeLu = r.loudnessRangeLu;
+    return t;
+}
+
+struct Search {
+    std::optional<Trial> best; // within the budgets, closest to the target
+    bool limited = false;      // short of the target because of the budgets
+    int trials = 0;
+};
+
+// Secant search on the fader: loudness rises by 1 dB per dB until the
+// limiter (or clipper) works, then by less. Settings past the budgets are
+// out of bounds: the search then bisects between the loudest setting within
+// them and the softest one past them.
+// With `giveUpOutOfReach`, a setting past the budgets that is still short of
+// the target ends the search at once: louder settings only need more, so the
+// target is out of reach (the caller then tries the clipper).
+Search searchFader(const AudioAsset& mix, double startDb, double target, const MasterParams& params,
+                   const std::function<void()>& tick, const CancellationToken& cancel, bool& cancelled,
+                   double ceilingGain = kMaxGainDb, // the softest setting known to be past the budgets
+                   bool giveUpOutOfReach = false)
+{
+    Search search;
+    std::optional<Trial> previous; // the last trial within the budgets
+    double gain = std::clamp(startDb, kMinGainDb, kMaxGainDb);
+    for (int trial = 0; trial < kMaxTrials; ++trial) {
+        const Trial t = runTrial(mix, gain, params, cancel, cancelled);
+        if (cancelled)
+            return search;
+        ++search.trials;
+        if (tick)
+            tick();
+        double next = 0.0;
+        if (!t.withinBudget() && giveUpOutOfReach && t.lufs < target - kToleranceLu) {
+            search.limited = true;
+            return search;
+        }
+        if (!t.withinBudget()) {
+            ceilingGain = std::min(ceilingGain, t.gainDb);
+            next = previous ? 0.5 * (previous->gainDb + t.gainDb) : t.gainDb - 6.0;
+        } else {
+            if (!search.best || std::abs(t.lufs - target) < std::abs(search.best->lufs - target))
+                search.best = t;
+            if (std::abs(t.lufs - target) <= kToleranceLu)
+                break;
+            double slope = 1.0;
+            if (previous && t.gainDb != previous->gainDb)
+                slope = std::clamp((t.lufs - previous->lufs) / (t.gainDb - previous->gainDb), 0.05, 1.0);
+            previous = t;
+            next = t.gainDb + (target - t.lufs) / slope;
+            if (next >= ceilingGain)
+                next = 0.5 * (t.gainDb + ceilingGain);
+        }
+        next = std::clamp(next, kMinGainDb, kMaxGainDb);
+        if (std::abs(next - t.gainDb) < kGainResolutionDb)
+            break; // pinned against a budget or the end of the fader
+        gain = next;
+    }
+    search.limited = search.best && std::abs(search.best->lufs - target) > kToleranceLu && search.best->lufs < target
+                     && ceilingGain < kMaxGainDb;
+    return search;
 }
 
 } // namespace
@@ -89,14 +176,17 @@ Result<LoudnessMatch> matchLoudness(const ProjectModel& model, const MediaPool& 
     settings.clamp();
     const double target = settings.targetLufs;
 
-    // The mix as the tracks deliver it: master fader at 0 dB, no master bus.
+    // The mix as the tracks and the master EQ deliver it: master fader at
+    // 0 dB, nothing after the EQ (the trials add it).
     ProjectModel dry = model;
     dry.masterGainDb = 0.0;
     dry.master.limiter = false;
+    dry.master.multiband = false;
+    dry.master.clipper = false;
     RenderOptions renderOptions;
     renderOptions.progress = [&](double fraction) {
         if (options.progress)
-            options.progress(0.4 * fraction);
+            options.progress(0.3 * fraction);
     };
     auto rendered = renderMix(dry, pool, renderOptions, cancel);
     if (!rendered)
@@ -109,61 +199,67 @@ Result<LoudnessMatch> matchLoudness(const ProjectModel& model, const MediaPool& 
     if (!(match.mixLufs > -70.0))
         return makeError(ErrorCode::InvalidArgument, "the mix is too quiet to measure its loudness");
 
-    // Secant search on the fader: loudness rises by 1 dB per dB until the
-    // limiter works, then by less. Settings that would take the limiter
-    // past kMaxLimiterReductionDb are out of bounds: the search then
-    // bisects between the loudest setting within the limit and the softest
-    // one past it.
+    // The limiter alone first; the clipper only when that falls short.
     bool cancelled = false;
-    std::optional<Trial> best;     // within the limit, closest to the target
-    std::optional<Trial> previous; // the last trial within the limit
-    double ceilingGain = kMaxGainDb; // the softest setting found past the limit
-    double gain = std::clamp(target - match.mixLufs, kMinGainDb, kMaxGainDb);
-    for (int trial = 0; trial < kMaxTrials; ++trial) {
-        const Trial t = runTrial(mix, gain, settings, cancel, cancelled);
-        if (cancelled)
-            return makeError(ErrorCode::Cancelled, "loudness match cancelled");
-        ++match.trials;
+    int ticks = 0;
+    const auto tick = [&] {
         if (options.progress)
-            options.progress(0.4 + 0.6 * (trial + 1) / kMaxTrials);
-
-        double next = 0.0;
-        if (t.maxReductionDb < -kMaxLimiterReductionDb) {
-            ceilingGain = std::min(ceilingGain, t.gainDb);
-            next = previous ? 0.5 * (previous->gainDb + t.gainDb) : t.gainDb - 6.0;
+            options.progress(0.3 + 0.7 * std::min(1.0, static_cast<double>(++ticks) / (2 * kMaxTrials)));
+    };
+    Search search = searchFader(mix, target - match.mixLufs, target, trialParams(settings, false), tick, cancel, cancelled,
+                                kMaxGainDb, true);
+    bool clipper = false;
+    if (!cancelled && search.limited) {
+        // Where the clipping budget runs out is known from the mix itself:
+        // the fader at which kMaxClippedShare of its oversampled samples
+        // reach the clipper's knee. The search starts there.
+        const double knee = settings.ceilingDbtp - settings.clipBelowCeilingDb - SoftClipper::kKneeDb;
+        const double budget = knee - SoftClipper::levelExceededBy(mix.channels[0].data(),
+                                                                   mix.channels[mix.numChannels() > 1 ? 1 : 0].data(),
+                                                                   mix.numFrames(), kMaxClippedShare);
+        const double start = std::min(target - match.mixLufs, budget - kGainResolutionDb);
+        Search clipped = searchFader(mix, start, target, trialParams(settings, true), tick, cancel, cancelled,
+                                     std::min(kMaxGainDb, budget + 0.1));
+        clipped.trials += search.trials;
+        if (clipped.best && (!search.best || clipped.best->lufs > search.best->lufs + kToleranceLu)) {
+            search = clipped;
+            clipper = true;
         } else {
-            if (!best || std::abs(t.lufs - target) < std::abs(best->lufs - target))
-                best = t;
-            if (std::abs(t.lufs - target) <= kToleranceLu)
-                break;
-            double slope = 1.0;
-            if (previous && t.gainDb != previous->gainDb)
-                slope = std::clamp((t.lufs - previous->lufs) / (t.gainDb - previous->gainDb), 0.05, 1.0);
-            previous = t;
-            next = t.gainDb + (target - t.lufs) / slope;
-            if (next >= ceilingGain)
-                next = 0.5 * (t.gainDb + ceilingGain);
+            search.trials = clipped.trials;
         }
-        next = std::clamp(next, kMinGainDb, kMaxGainDb);
-        if (std::abs(next - t.gainDb) < kGainResolutionDb)
-            break; // pinned against the limit or the end of the fader
-        gain = next;
     }
-    if (!best)
+    if (cancelled)
+        return makeError(ErrorCode::Cancelled, "loudness match cancelled");
+    match.trials = search.trials;
+    if (!search.best)
         return makeError(ErrorCode::InvalidArgument, "every master fader setting tried overloaded the limiter");
 
-    match.masterGainDb = best->gainDb;
-    match.resultLufs = best->lufs;
-    match.resultTruePeakDbtp = best->truePeakDbtp;
-    match.resultLoudnessRangeLu = best->loudnessRangeLu;
-    match.maxReductionDb = best->maxReductionDb;
-    match.reached = std::abs(best->lufs - target) <= kToleranceLu;
-    match.limited = !match.reached && best->lufs < target && ceilingGain < kMaxGainDb;
+    const Trial& best = *search.best;
+    match.masterGainDb = best.gainDb;
+    match.resultLufs = best.lufs;
+    match.resultTruePeakDbtp = best.truePeakDbtp;
+    match.resultLoudnessRangeLu = best.loudnessRangeLu;
+    match.maxReductionDb = best.maxReductionDb;
+    match.clipper = clipper;
+    match.clippedShare = clipper ? best.clippedShare : 0.0;
+    match.reached = std::abs(best.lufs - target) <= kToleranceLu;
+    match.limited = !match.reached && search.limited;
     match.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     if (options.progress)
         options.progress(1.0);
     return match;
 }
+
+MasterSettings applyLoudnessMatch(MasterSettings master, const LoudnessMatch& match, double targetLufs)
+{
+    master.limiter = true;
+    master.targetLufs = targetLufs;
+    master.clipper = match.clipper;
+    master.clamp();
+    return master;
+}
+
+static_assert(MasterSettings::kMultibandBands == kMultibandBands, "the project and the compressor must agree on the bands");
 
 // ---- tonal balance ------------------------------------------------------------
 

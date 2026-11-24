@@ -138,7 +138,7 @@ TEST_CASE("The master chain at unity passes the audio exactly, delayed by its la
     CHECK(y.r == x.r);
     MasterChain chain;
     chain.prepare(kRate);
-    CHECK(chain.latency() == static_cast<int>(std::lround(0.005 * kRate)) - 1 + 8); // 5 ms window + interpolator
+    CHECK(chain.latency() == SoftClipper::latency() + static_cast<int>(std::lround(0.005 * kRate)) - 1 + 8); // clipper + 5 ms window + interpolator
 }
 
 TEST_CASE("The limiter keeps the true peak at the ceiling, inter-sample peaks included", "[dsp][master]")

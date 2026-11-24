@@ -15,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
 
@@ -69,6 +70,56 @@ MasterPanel::MasterPanel(QWidget* parent) : QWidget(parent)
         eqGains_[b] = box;
         eqForm->addRow(tr(kEqNames[b]), box);
     }
+
+    // Multiband compressor.
+    multiband_ = new QGroupBox(tr("Multiband"), this);
+    multiband_->setCheckable(true);
+    multiband_->setToolTip(helpTip(tr("Multiband compressor"),
+                                   tr("Three bands, split at 120 Hz and 2.5 kHz, each turned down when it gets louder than its\n"
+                                      "threshold. For control: a boomy low end, harsh loud passages, glue. It does not make a\n"
+                                      "master louder by itself (the clipper does that).")));
+    auto* mbForm = new QFormLayout(multiband_);
+    const char* const bandNames[] = {QT_TR_NOOP("Low (below 120 Hz)"), QT_TR_NOOP("Mid (120 Hz-2.5 kHz)"), QT_TR_NOOP("High (above 2.5 kHz)")};
+    for (std::size_t b = 0; b < mbThreshold_.size(); ++b) {
+        auto* threshold = new QDoubleSpinBox(multiband_);
+        threshold->setRange(daw::MasterSettings::kMinThresholdDb, 0.0);
+        threshold->setDecimals(1);
+        threshold->setSingleStep(1.0);
+        threshold->setSuffix(tr(" dB"));
+        threshold->setKeyboardTracking(false);
+        threshold->setToolTip(helpTip(tr("Threshold"), tr("The band's RMS level (dBFS, after the master fader) above which it is turned down.")));
+        auto* ratio = new QDoubleSpinBox(multiband_);
+        ratio->setRange(1.0, daw::MasterSettings::kMaxRatio);
+        ratio->setDecimals(1);
+        ratio->setSingleStep(0.5);
+        ratio->setPrefix(QStringLiteral("1:"));
+        ratio->setKeyboardTracking(false);
+        ratio->setToolTip(helpTip(tr("Ratio"), tr("How hard: at 1:2, 2 dB over the threshold comes out 1 dB over.")));
+        mbThreshold_[b] = threshold;
+        mbRatio_[b] = ratio;
+        auto* row = new QHBoxLayout;
+        row->addWidget(threshold, 1);
+        row->addWidget(ratio, 1);
+        mbForm->addRow(tr(bandNames[b]), row);
+    }
+
+    // Clipper.
+    clipper_ = new QGroupBox(tr("Clipper"), this);
+    clipper_->setCheckable(true);
+    clipper_->setToolTip(helpTip(tr("Soft clipper"),
+                                 tr("Rounds off the loudest peaks before the limiter, 4x oversampled. A limiter cannot touch\n"
+                                    "the peaks of single kick hits; the clipper can, so loud masters keep their dynamics.\n"
+                                    "Match Loudness switches it on when the limiter alone cannot reach the target.")));
+    clipBelow_ = new QDoubleSpinBox(clipper_);
+    clipBelow_->setRange(0.0, 6.0);
+    clipBelow_->setDecimals(1);
+    clipBelow_->setSingleStep(0.5);
+    clipBelow_->setSuffix(tr(" dB under the ceiling"));
+    clipBelow_->setKeyboardTracking(false);
+    clipBelow_->setToolTip(helpTip(tr("Clip level"), tr("Where the clipper holds the peaks. 1 dB under the ceiling leaves the limiter\n"
+                                                       "room for the overshoot the oversampling filters bring back.")));
+    auto* clipForm = new QFormLayout(clipper_);
+    clipForm->addRow(tr("Clip level"), clipBelow_);
 
     // Limiter.
     limiter_ = new QGroupBox(tr("Limiter"), this);
@@ -169,15 +220,31 @@ MasterPanel::MasterPanel(QWidget* parent) : QWidget(parent)
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color: #7d8088;"));
 
-    auto* layout = new QVBoxLayout(this);
+    auto* content = new QWidget(this);
+    auto* layout = new QVBoxLayout(content);
     layout->addWidget(tonal);
     layout->addWidget(eq_);
+    layout->addWidget(multiband_);
+    layout->addWidget(clipper_);
     layout->addWidget(limiter_);
     layout->addWidget(loudness);
     layout->addWidget(hint);
     layout->addStretch(1);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(content);
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->addWidget(scroll);
 
     connect(eq_, &QGroupBox::toggled, this, &MasterPanel::edited);
+    connect(multiband_, &QGroupBox::toggled, this, &MasterPanel::edited);
+    connect(clipper_, &QGroupBox::toggled, this, &MasterPanel::edited);
+    for (std::size_t b = 0; b < mbThreshold_.size(); ++b)
+        for (QDoubleSpinBox* box : {mbThreshold_[b], mbRatio_[b]})
+            connect(box, &QDoubleSpinBox::valueChanged, this, &MasterPanel::edited);
+    connect(clipBelow_, &QDoubleSpinBox::valueChanged, this, &MasterPanel::edited);
     connect(limiter_, &QGroupBox::toggled, this, &MasterPanel::edited);
     for (QDoubleSpinBox* box : eqGains_)
         connect(box, &QDoubleSpinBox::valueChanged, this, &MasterPanel::edited);
@@ -215,7 +282,16 @@ void MasterPanel::setSettings(const daw::MasterSettings& settings, double master
 {
     settings_ = settings;
     updating_ = true;
-    const QSignalBlocker b1(limiter_), b2(ceiling_), b3(release_), b4(target_), b5(preset_), b6(eq_);
+    const QSignalBlocker b1(limiter_), b2(ceiling_), b3(release_), b4(target_), b5(preset_), b6(eq_), b7(multiband_),
+        b8(clipper_), b9(clipBelow_);
+    multiband_->setChecked(settings.multiband);
+    for (std::size_t b = 0; b < mbThreshold_.size(); ++b) {
+        const QSignalBlocker t(mbThreshold_[b]), r(mbRatio_[b]);
+        mbThreshold_[b]->setValue(settings.multibandThresholdDb[b]);
+        mbRatio_[b]->setValue(settings.multibandRatio[b]);
+    }
+    clipper_->setChecked(settings.clipper);
+    clipBelow_->setValue(settings.clipBelowCeilingDb);
     eq_->setChecked(settings.eq);
     for (std::size_t b = 0; b < eqGains_.size(); ++b) {
         const QSignalBlocker block(eqGains_[b]);
@@ -304,14 +380,19 @@ void MasterPanel::showMatch(const daw::LoudnessMatch& match, double targetLufs)
                     .arg(match.resultTruePeakDbtp, 0, 'f', 1)
                     .arg(-match.maxReductionDb, 0, 'f', 1);
     else if (match.limited)
-        text += tr("%1 would take more than %2 dB of limiting, which crushes the mix. The loudest clean setting, %3 dB on the "
-                   "master fader, gives %4.")
+        text += tr("%1 would take more than %2 dB of limiting or clipping on more than %3 % of the samples, which crushes the "
+                   "mix. The loudest clean setting, %4 dB on the master fader, gives %5.")
                     .arg(lufs(targetLufs))
                     .arg(daw::kMaxLimiterReductionDb, 0, 'f', 0)
+                    .arg(daw::kMaxClippedShare * 100.0, 0, 'f', 0)
                     .arg(match.masterGainDb, 0, 'f', 1)
                     .arg(lufs(match.resultLufs));
     else
         text += tr("The closest setting, %1 dB on the master fader, gives %2.").arg(match.masterGainDb, 0, 'f', 1).arg(lufs(match.resultLufs));
+    if (match.clipper)
+        text += QStringLiteral(" ") + tr("The soft clipper is on: it rounds off the loudest peaks, %1 % of the samples, so the "
+                                         "limiter does not have to crush them.")
+                                          .arg(match.clippedShare * 100.0, 0, 'f', 1);
     result_->setText(text);
 }
 
@@ -412,6 +493,13 @@ daw::MasterSettings MasterPanel::readControls() const
     s.eq = eq_->isChecked();
     for (std::size_t b = 0; b < eqGains_.size(); ++b)
         s.eqGainDb[b] = eqGains_[b]->value();
+    s.multiband = multiband_->isChecked();
+    for (std::size_t b = 0; b < mbThreshold_.size(); ++b) {
+        s.multibandThresholdDb[b] = mbThreshold_[b]->value();
+        s.multibandRatio[b] = mbRatio_[b]->value();
+    }
+    s.clipper = clipper_->isChecked();
+    s.clipBelowCeilingDb = clipBelow_->value();
     s.limiter = limiter_->isChecked();
     s.ceilingDbtp = ceiling_->value();
     s.releaseMs = release_->value();

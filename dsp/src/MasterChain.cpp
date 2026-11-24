@@ -143,6 +143,8 @@ BiquadCoefficients masterEqCoefficients(std::size_t band, double gainDb, double 
 void MasterChain::prepare(double sampleRate)
 {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    multiband_.prepare(sampleRate_);
+    clipper_.prepare(sampleRate_);
     limiter_.prepare(sampleRate_);
     setParams(params_);
     reset();
@@ -152,6 +154,8 @@ void MasterChain::setParams(const MasterParams& params) noexcept
 {
     params_ = params;
     limiter_.setParams(params.limiter, params.ceilingDbtp, params.releaseMs);
+    multiband_.setParams(params.multiband);
+    clipper_.setParams(params.clipper, params.ceilingDbtp - std::max(0.0f, params.clipBelowCeilingDb));
     // New coefficients keep the filters' memory, so moving a gain does not click.
     for (std::size_t b = 0; b < kMasterEqBandCount; ++b) {
         const float g = std::isfinite(params.eqGainDb[b])
@@ -173,6 +177,8 @@ void MasterChain::reset() noexcept
     for (auto& channel : eq_)
         for (Biquad& section : channel)
             section.reset();
+    multiband_.reset();
+    clipper_.reset();
     limiter_.reset();
 }
 
@@ -190,6 +196,8 @@ void MasterChain::process(float* left, float* right, int numFrames) noexcept
                 x[i] = static_cast<float>(section.process(x[i]));
         }
     }
+    multiband_.process(left, right, numFrames);
+    clipper_.process(left, right, numFrames);
     limiter_.process(left, right, numFrames);
 }
 

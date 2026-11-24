@@ -128,19 +128,43 @@ TEST_CASE("Match Loudness reaches the target through the limiter, and the export
     CHECK(quiet->maxReductionDb > -0.1);
 }
 
-TEST_CASE("Match Loudness stops short of a target that would crush the mix", "[session][master]")
+TEST_CASE("Match Loudness adds the clipper only when the limiter alone falls short, and stops at both budgets",
+          "[session][master]")
 {
     Fixture f;
     addSong(f, 1.4f);
     MasterSettings master;
     master.limiter = true;
-    const auto match = matchLoudness(f.model, f.pool, -5.0, master);
-    REQUIRE(match.ok());
-    CHECK_FALSE(match->reached);
-    CHECK(match->limited);
-    CHECK(match->resultLufs < -5.0);
-    CHECK(match->maxReductionDb >= -kMaxLimiterReductionDb - 0.05);
-    CHECK(match->resultTruePeakDbtp <= -1.0 + 0.02);
+
+    // Within the limiter's reach: no clipper.
+    const auto easy = matchLoudness(f.model, f.pool, -14.0, master);
+    REQUIRE(easy.ok());
+    CHECK(easy->reached);
+    CHECK_FALSE(easy->clipper);
+    CHECK(easy->clippedShare == 0.0);
+
+    // Far beyond it, on a denser mix (a noise bed under the hits, so the
+    // budgets bind before the fader runs out): the clipper joins, and the
+    // match stops at the budgets.
+    f.add(makeNoise(static_cast<std::int64_t>(10.0 * kRate), kRate, 2, 0.25f, 7));
+    const auto hard = matchLoudness(f.model, f.pool, -5.0, master);
+    REQUIRE(hard.ok());
+    CHECK_FALSE(hard->reached);
+    CHECK(hard->limited);
+    CHECK(hard->clipper);
+    CHECK(hard->resultLufs < -5.0);
+    CHECK(hard->clippedShare <= kMaxClippedShare + 0.001);
+    CHECK(hard->maxReductionDb >= -kMaxLimiterReductionDb - 0.05);
+    CHECK(hard->resultTruePeakDbtp <= -1.0 + 0.02);
+
+    // Applied, the settings carry the clipper, and the export measures what the match promised.
+    f.model.masterGainDb = hard->masterGainDb;
+    f.model.master = applyLoudnessMatch(master, *hard, -5.0);
+    CHECK(f.model.master.clipper);
+    const auto mix = renderMix(f.model, f.pool);
+    REQUIRE(mix.ok());
+    CHECK(mix->report.loudness.integratedLufs == Approx(hard->resultLufs).margin(0.1));
+    CHECK(truePeakDb(*mix->audio) <= -1.0 + 0.02);
 }
 
 TEST_CASE("Match Loudness refuses a silent mix", "[session][master]")

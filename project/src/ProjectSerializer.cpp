@@ -118,6 +118,26 @@ static MasterSettings masterFromJson(const json& j)
     }
     if (const auto t = j.find("tonalTarget"); t != j.end())
         m.tonalTarget = tonalTargetFromJson(*t);
+    if (const auto mb = j.find("multiband"); mb != j.end() && mb->is_object()) {
+        if (const auto on = mb->find("enabled"); on != mb->end() && on->is_boolean())
+            m.multiband = on->get<bool>();
+        const auto read = [&](const char* key, auto& values) {
+            const auto it = mb->find(key);
+            if (it == mb->end() || !it->is_array())
+                return;
+            for (std::size_t b = 0; b < values.size() && b < it->size(); ++b)
+                if ((*it)[b].is_number())
+                    values[b] = (*it)[b].template get<double>();
+        };
+        read("thresholdsDb", m.multibandThresholdDb);
+        read("ratios", m.multibandRatio);
+    }
+    if (const auto c = j.find("clipper"); c != j.end() && c->is_object()) {
+        if (const auto on = c->find("enabled"); on != c->end() && on->is_boolean())
+            m.clipper = on->get<bool>();
+        if (const auto below = c->find("belowCeilingDb"); below != c->end() && below->is_number())
+            m.clipBelowCeilingDb = below->get<double>();
+    }
     m.clamp();
     return m;
 }
@@ -247,7 +267,10 @@ json projectToJson(const ProjectModel& model)
                                   {"ceilingDbtp", m.ceilingDbtp},
                                   {"releaseMs", m.releaseMs},
                                   {"targetLufs", m.targetLufs},
-                                  {"eq", {{"enabled", m.eq}, {"gainsDb", m.eqGainDb}}}};
+                                  {"eq", {{"enabled", m.eq}, {"gainsDb", m.eqGainDb}}},
+                                  {"multiband",
+                                   {{"enabled", m.multiband}, {"thresholdsDb", m.multibandThresholdDb}, {"ratios", m.multibandRatio}}},
+                                  {"clipper", {{"enabled", m.clipper}, {"belowCeilingDb", m.clipBelowCeilingDb}}}};
         if (!m.tonalTarget.empty())
             doc["mixer"]["master"]["tonalTarget"] = tonalTargetToJson(m.tonalTarget);
     }

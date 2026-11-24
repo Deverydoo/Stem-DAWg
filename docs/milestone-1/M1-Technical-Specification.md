@@ -286,7 +286,7 @@ u64 FNV-1a checksum of all preceding bytes
 - 64-bit keys are stored as hex strings, so JS and Python tooling never loses precision. Frame counts are JSON integers; nlohmann preserves `int64`.
 - `pan` (−1…+1) and `solo` were added after the first v1 files. They are optional with defaults 0 and `false`, so older v1 files load unchanged and older builds ignore them, which needs no schema bump under the policy in 7.4. Out-of-range `pan` in a hand-edited file is clamped on load; the fader floor `gainDb = -144` means silence (shown as −inf).
 - An optional per-track `"cleanup"` object (added in M2) stores the track's clean-up chain: `bypassed`, `dcRemoval`, `highPass {enabled, frequencyHz, slopeDbPerOctave}`, `expander {enabled, thresholdDb, ratio, rangeDb, releaseMs}`, since M4 `transient {enabled, attackDb, sustainDb}` and `resonance {enabled, harshDb, shimmerDb}` and `stereo {enabled, monoBass, monoBelowHz, widthPercent, phaseAlign}`, and since M3 `hum {enabled, frequencyHz, harmonics}` and `denoise {enabled, reductionDb, sensitivityDb, profile {sampleRate, fftSize, seconds, source?, powerDb[]}}` (the noise profile at 0.01 dB resolution; `source` is `"selection"` when it was learned from a selected region). It is written only when it differs from the default (everything off). Missing or invalid values take their defaults, and numbers are clamped to their ranges, so neither older files nor hand edits can configure an unstable filter. No schema bump is needed (section 7.4). See [M2-Stem-Triage.md](../milestone-2/M2-Stem-Triage.md).
-- An optional `mixer.master` object (added in M5) stores the master bus: `limiter`, `ceilingDbtp`, `releaseMs`, the loudness target `targetLufs`, `eq {enabled, gainsDb[5]}` and the tonal target `tonalTarget {name, references[], meanDb[28], spreadDb[28]}`. It is written only when it differs from the default (limiter off) and clamped when read. See [M5-Mastering.md](../milestone-5/M5-Mastering.md).
+- An optional `mixer.master` object (added in M5) stores the master bus: `limiter`, `ceilingDbtp`, `releaseMs`, the loudness target `targetLufs`, `eq {enabled, gainsDb[5]}`, `multiband {enabled, thresholdsDb[3], ratios[3]}`, `clipper {enabled, belowCeilingDb}` and the tonal target `tonalTarget {name, references[], meanDb[28], spreadDb[28]}`. It is written only when it differs from the default (limiter off) and clamped when read. See [M5-Mastering.md](../milestone-5/M5-Mastering.md).
 - An optional `"release": { "profileId": "…", "fields": { "title": "…", "album": "…", … } }` block stores the song-level export metadata and the artist profile chosen for the project (section 7.5). Only non-empty fields are written.
 - Validation on load and save rejects non-positive rates, duplicate or missing ids, clips that reference unknown media, and negative positions or lengths.
 
@@ -399,7 +399,7 @@ The other five workspaces (Mixer, Piano Roll, Spectral, Reconstruction, Masterin
 
 ## 11. Testing strategy
 
-Run with `ctest --preset local-debug` (or `-C Release`). There are 243 CTest cases in 7 executables (as of M5), all generated audio (no binary fixtures):
+Run with `ctest --preset local-debug` (or `-C Release`). There are 251 CTest cases in 7 executables (as of M5), all generated audio (no binary fixtures):
 
 | Binary | Covers |
 |--------|--------|

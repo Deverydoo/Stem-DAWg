@@ -18,6 +18,11 @@ inline ProjectModel makeRichProject()
     model.master = {true, -0.5, 150.0, -10.0};
     model.master.eq = true;
     model.master.eqGainDb = {1.5, -2.0, 0.0, 2.5, -1.0};
+    model.master.multiband = true;
+    model.master.multibandThresholdDb = {-18.0, -21.0, -24.0};
+    model.master.multibandRatio = {1.5, 2.0, 3.0};
+    model.master.clipper = true;
+    model.master.clipBelowCeilingDb = 1.5;
     model.master.tonalTarget = {"Techno refs", {"a.wav", "b.flac"}, std::vector<double>(28, -14.0), std::vector<double>(28, 2.0)};
     model.playhead = 123456789;
 

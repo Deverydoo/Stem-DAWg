@@ -341,10 +341,11 @@ int main(int argc, char** argv)
                             *masterLufs, match->mixLufs, match->mixTruePeakDbtp, match->masterGainDb, match->resultLufs,
                             match->resultTruePeakDbtp, match->resultLoudnessRangeLu, match->maxReductionDb, match->trials,
                             match->seconds,
-                            match->reached ? "" : match->limited ? "  (target needs more limiting than allowed)" : "  (target not reached)");
+                            match->reached ? "" : match->limited ? "  (target needs more limiting or clipping than allowed)" : "  (target not reached)");
+            if (!json && match->clipper)
+                std::printf("  with the clipper, touching %.2f %% of the samples\n", match->clippedShare * 100.0);
             model.masterGainDb = match->masterGainDb;
-            model.master = master;
-            model.master.targetLufs = *masterLufs;
+            model.master = applyLoudnessMatch(master, *match, *masterLufs);
             ++changed;
         }
         auto cleaned = analyzeStems(model, pool);
