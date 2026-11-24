@@ -84,7 +84,13 @@ json cleanupToJson(const TrackCleanup& c)
             {"transient",
              {{"enabled", c.transient.enabled}, {"attackDb", c.transient.attackDb}, {"sustainDb", c.transient.sustainDb}}},
             {"resonance",
-             {{"enabled", c.resonance.enabled}, {"harshDb", c.resonance.harshDb}, {"shimmerDb", c.resonance.shimmerDb}}}};
+             {{"enabled", c.resonance.enabled}, {"harshDb", c.resonance.harshDb}, {"shimmerDb", c.resonance.shimmerDb}}},
+            {"stereo",
+             {{"enabled", c.stereo.enabled},
+              {"monoBass", c.stereo.monoBass},
+              {"monoBelowHz", c.stereo.monoBelowHz},
+              {"widthPercent", c.stereo.widthPercent},
+              {"phaseAlign", c.stereo.phaseAlign}}}};
 }
 
 // Missing or malformed values fall back to the defaults; numbers are clamped
@@ -125,6 +131,13 @@ TrackCleanup cleanupFromJson(const json& j)
         c.resonance.enabled = flag(*rs, "enabled", c.resonance.enabled);
         c.resonance.harshDb = number(*rs, "harshDb", c.resonance.harshDb);
         c.resonance.shimmerDb = number(*rs, "shimmerDb", c.resonance.shimmerDb);
+    }
+    if (const auto st = j.find("stereo"); st != j.end() && st->is_object()) {
+        c.stereo.enabled = flag(*st, "enabled", c.stereo.enabled);
+        c.stereo.monoBass = flag(*st, "monoBass", c.stereo.monoBass);
+        c.stereo.monoBelowHz = number(*st, "monoBelowHz", c.stereo.monoBelowHz);
+        c.stereo.widthPercent = number(*st, "widthPercent", c.stereo.widthPercent);
+        c.stereo.phaseAlign = flag(*st, "phaseAlign", c.stereo.phaseAlign);
     }
     if (const auto hum = j.find("hum"); hum != j.end() && hum->is_object()) {
         c.hum.enabled = flag(*hum, "enabled", c.hum.enabled);

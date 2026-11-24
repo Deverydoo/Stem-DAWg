@@ -13,6 +13,7 @@
 //  * Which stems share the same low end (a kick or bass doubled across stems)?
 //  * Which stems bleed into each other?
 //  * Do drum hits rise slowly, and do narrow resonances ring through the song?
+//  * Is the low end mono, and what does a mono sum lose?
 //  * Does the mix clip, and how loud is it (BS.1770 / EBU R 128)?
 //
 // Each stem is measured as it sounds, after its clean-up chain (high-pass,
@@ -64,6 +65,18 @@ struct ResonanceFinding {
 };
 inline constexpr double kResonanceProbeDb = 6.0; // depth the report measures with, and suggests
 
+/// Frequency ranges of the mono-sum check (above the low end, which mono bass handles).
+inline constexpr std::size_t kMonoBandCount = 4;
+inline constexpr std::array<double, kMonoBandCount + 1> kMonoBandEdgesHz{120.0, 500.0, 2000.0, 8000.0, 16000.0};
+
+/// What one range loses when the stem is summed to mono (phones, Bluetooth
+/// speakers, club systems): 0 dB for a mono signal, -3 dB for unrelated
+/// channels, lower when they cancel.
+struct MonoBand {
+    double lossDb = 0.0;
+    double alignedLossDb = 0.0; // the same with phase alignment (dsp/PhaseAligner)
+};
+
 struct TrackStemReport {
     TrackId track;
     std::string name;
@@ -90,6 +103,9 @@ struct TrackStemReport {
     std::optional<double> attackMs;   // median rise time of the loud hits; empty with too few of them
     ResonanceFinding harshness;       // 2-6 kHz
     ResonanceFinding shimmer;         // 8-17.5 kHz
+    std::optional<double> lowSideDb;  // side energy over mid energy below kLowEndHz; empty without low end
+    double lowSideShare = 0.0;        // fraction of all stems' side energy below kLowEndHz
+    std::array<MonoBand, kMonoBandCount> mono{}; // per kMonoBandEdgesHz range
     TrackCleanup cleanup;             // the chain in place when measured
 };
 
@@ -102,7 +118,8 @@ struct StemPairReport {
 /// A change to one track's clean-up chain that solves an advice item. Only
 /// the stages that are set change; applying a fix also lifts the bypass.
 /// Resonance fixes merge: each range keeps the larger of the two depths, so
-/// a harshness fix and a shimmer fix for the same track both apply.
+/// a harshness fix and a shimmer fix for the same track both apply. Stereo
+/// fixes merge too: mono bass and phase alignment each stay on once set.
 struct CleanupFix {
     std::size_t track = 0; // index into StemReport::tracks
     std::optional<bool> dcRemoval;
@@ -110,6 +127,7 @@ struct CleanupFix {
     std::optional<ExpanderSettings> expander;
     std::optional<TransientSettings> transient;
     std::optional<ResonanceSettings> resonance;
+    std::optional<StereoSettings> stereo;
 
     TrackCleanup applyTo(TrackCleanup cleanup) const;
     friend bool operator==(const CleanupFix&, const CleanupFix&) = default;

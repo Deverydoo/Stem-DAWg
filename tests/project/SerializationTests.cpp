@@ -122,6 +122,9 @@ TEST_CASE("Track clean-up is written only when set, optional when read, and clam
     CHECK(doc["tracks"][0]["cleanup"]["transient"]["sustainDb"] == -3.0);
     CHECK(doc["tracks"][0]["cleanup"]["resonance"]["harshDb"] == 4.0);
     CHECK(doc["tracks"][0]["cleanup"]["resonance"]["shimmerDb"] == 7.5);
+    CHECK(doc["tracks"][0]["cleanup"]["stereo"]["monoBelowHz"] == 90.0);
+    CHECK(doc["tracks"][0]["cleanup"]["stereo"]["widthPercent"] == 80.0);
+    CHECK(doc["tracks"][0]["cleanup"]["stereo"]["phaseAlign"] == true);
     CHECK_FALSE(doc["tracks"][1].contains("cleanup")); // default chain: nothing written
 
     // Older files have no clean-up: every stage is off.
@@ -135,7 +138,8 @@ TEST_CASE("Track clean-up is written only when set, optional when read, and clam
                                    {"highPass", {{"enabled", true}, {"frequencyHz", 5.0}, {"slopeDbPerOctave", 30}}},
                                    {"expander", {{"enabled", true}, {"thresholdDb", 12.0}, {"ratio", 0.5}, {"rangeDb", "a lot"}, {"releaseMs", 1e9}}},
                                    {"transient", {{"enabled", true}, {"attackDb", 99.0}, {"sustainDb", "loud"}}},
-                                   {"resonance", {{"enabled", true}, {"harshDb", -4.0}, {"shimmerDb", 50.0}}}};
+                                   {"resonance", {{"enabled", true}, {"harshDb", -4.0}, {"shimmerDb", 50.0}}},
+                                   {"stereo", {{"enabled", true}, {"monoBass", "on"}, {"monoBelowHz", 5000.0}, {"widthPercent", -20.0}}}};
     parsed = projectFromJson(doc);
     REQUIRE(parsed.ok());
     const TrackCleanup& c = parsed->tracks[0].cleanup;
@@ -153,6 +157,11 @@ TEST_CASE("Track clean-up is written only when set, optional when read, and clam
     CHECK(c.resonance.enabled);
     CHECK(c.resonance.harshDb == 0.0);
     CHECK(c.resonance.shimmerDb == ResonanceSettings::kMaxDb);
+    CHECK(c.stereo.enabled);
+    CHECK(c.stereo.monoBass == StereoSettings{}.monoBass);
+    CHECK(c.stereo.monoBelowHz == StereoSettings::kMaxHz);
+    CHECK(c.stereo.widthPercent == 0.0);
+    CHECK_FALSE(c.stereo.phaseAlign);
 }
 
 TEST_CASE("Projects saved under the old Industrial DAW format id still open", "[project][serialize][regression]")

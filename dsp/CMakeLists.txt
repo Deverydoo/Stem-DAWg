@@ -12,6 +12,7 @@ daw_add_module(dsp
         src/ResonanceSuppressor.cpp
         src/TransientShaper.cpp
         src/SpectralDenoiser.cpp
+        src/Stereo.cpp
         src/DeepFilterDsp.cpp
         src/BleedSuppressor.cpp
     PUBLIC_DEPS

@@ -37,6 +37,7 @@ void CleanupChain::prepare(double sampleRate)
     attackCoeff_ = timeCoeff(kAttackMs, sampleRate_);
     holdFrames_ = static_cast<int>(std::lround(kHoldMs * 0.001 * sampleRate_));
     shaper_.prepare(sampleRate_, lookahead_);
+    imager_.prepare(sampleRate_);
     CleanupParams params = params_;
     params.noiseProfile = nullptr; // owned by a snapshot that may be gone; the next setParams brings it back
     params_ = {};
@@ -73,6 +74,10 @@ void CleanupChain::setParams(const CleanupParams& params) noexcept
     denoiser_.setNoiseProfile(params.denoise ? params.noiseProfile : nullptr);
     denoiser_.setResonance(params.resonance ? ResonanceParams{params.resonanceHarshDb, params.resonanceShimmerDb}
                                             : ResonanceParams{});
+    denoiser_.setPhaseAlign(params.stereo && params.stereoPhaseAlign);
+    // Switched off, the imager glides back to neutral (see processChunk).
+    imager_.setParams(params.stereo ? StereoImagerParams{params.stereoMonoBass, params.stereoMonoBelowHz, params.stereoWidth}
+                                    : StereoImagerParams{false, params.stereoMonoBelowHz, 1.0f});
 
     releaseCoeff_ = timeCoeff(std::max(1.0f, params.releaseMs), sampleRate_);
     // Above threshold + half the knee the curve is flat: the per-sample gain
@@ -96,6 +101,7 @@ void CleanupChain::reset() noexcept
     std::fill(delay_.begin(), delay_.end(), 0.0f);
     delayPos_ = 0;
     shaper_.reset();
+    imager_.reset();
     hum_.reset();
     denoiser_.reset();
     std::fill(fftDelay_.begin(), fftDelay_.end(), 0.0f);
@@ -169,6 +175,9 @@ void CleanupChain::processChunk(float* left, float* right, int numFrames) noexce
                 x[i] = static_cast<float>(section.process(x[i]));
         }
     }
+
+    if (imager_.active())
+        imager_.process(left, right, numFrames);
 
     hum_.process(left, right, numFrames);
 

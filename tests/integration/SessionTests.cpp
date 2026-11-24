@@ -169,6 +169,7 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     c.expander = {true, -45.0, 2.5, 18.0, 300.0};
     c.transient = {true, 5.0, -2.0};
     c.resonance = {true, 3.0, 9.0};
+    c.stereo = {true, true, 100.0, 150.0, true};
     MediaPool pool;
 
     auto snapshot = buildPlaybackSnapshot(model, pool, 48000.0, 1);
@@ -190,6 +191,11 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     CHECK(p.resonanceHarshDb == 3.0f);
     CHECK(p.resonanceShimmerDb == 9.0f);
     CHECK(p.spectral());
+    CHECK(p.stereo);
+    CHECK(p.stereoMonoBass);
+    CHECK(p.stereoMonoBelowHz == 100.0f);
+    CHECK(p.stereoWidth == 1.5f);
+    CHECK(p.stereoPhaseAlign);
     CHECK_FALSE(snapshot->tracks[1].cleanup.active());
 
     // The transient shaper alone makes a chain.

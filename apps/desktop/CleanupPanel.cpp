@@ -330,6 +330,43 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     exForm->addRow(floor_);
     exForm->addRow(fromFloor_);
 
+    // Stereo repair.
+    stereo_ = new QGroupBox(tr("Stereo"), this);
+    stereo_->setCheckable(true);
+    stereo_->setToolTip(helpTip(tr("Stereo repair"),
+                                tr("Fixes the stereo image of AI stems: a low end that is wide or out of phase, and sound\n"
+                                   "that cancels when the song is summed to mono (phones, Bluetooth speakers, clubs).")));
+    monoBass_ = new QCheckBox(tr("Mono below"), stereo_);
+    monoBass_->setToolTip(helpTip(tr("Mono bass"), tr("Everything below this frequency becomes mono. Separated stems often carry a wide\n"
+                                                      "or out-of-phase low end; a mono low end keeps its punch on every system.")));
+    monoBelow_ = new QDoubleSpinBox(stereo_);
+    monoBelow_->setRange(daw::StereoSettings::kMinHz, daw::StereoSettings::kMaxHz);
+    monoBelow_->setDecimals(0);
+    monoBelow_->setSingleStep(10.0);
+    monoBelow_->setSuffix(tr(" Hz"));
+    monoBelow_->setKeyboardTracking(false);
+    monoBelow_->setToolTip(monoBass_->toolTip());
+    width_ = new QDoubleSpinBox(stereo_);
+    width_->setRange(0.0, daw::StereoSettings::kMaxWidthPercent);
+    width_->setDecimals(0);
+    width_->setSingleStep(5.0);
+    width_->setSuffix(tr(" %"));
+    width_->setKeyboardTracking(false);
+    width_->setToolTip(helpTip(tr("Width"), tr("0 % is mono, 100 % leaves the image as it is, 200 % doubles the difference\n"
+                                               "between the channels. Narrowing tames a phasey, swirling stem.")));
+    phaseAlign_ = new QCheckBox(tr("Align phase (mono-safe)"), stereo_);
+    phaseAlign_->setToolTip(helpTip(tr("Phase alignment"),
+                                    tr("Where left and right carry the same sound out of step, brings them into step, so a\n"
+                                       "mono sum keeps it. Each channel keeps its level; real width and reverb are left\n"
+                                       "alone. The stem report says when it helps.")));
+    auto* monoRow = new QHBoxLayout;
+    monoRow->addWidget(monoBass_);
+    monoRow->addWidget(monoBelow_, 1);
+    auto* stForm = new QFormLayout(stereo_);
+    stForm->addRow(monoRow);
+    stForm->addRow(tr("Width"), width_);
+    stForm->addRow(phaseAlign_);
+
     // Harshness and shimmer control.
     resonance_ = new QGroupBox(tr("Harshness"), this);
     resonance_->setCheckable(true);
@@ -407,6 +444,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     editorLayout->addWidget(voice_);
     editorLayout->addWidget(dc_);
     editorLayout->addWidget(highPass_);
+    editorLayout->addWidget(stereo_);
     editorLayout->addWidget(hum_);
     editorLayout->addWidget(denoise_);
     editorLayout->addWidget(resonance_);
@@ -434,6 +472,9 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
     connect(dc_, &QCheckBox::toggled, this, &CleanupPanel::edited);
     connect(highPass_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(expander_, &QGroupBox::toggled, this, &CleanupPanel::edited);
+    connect(stereo_, &QGroupBox::toggled, this, &CleanupPanel::edited);
+    connect(monoBass_, &QCheckBox::toggled, this, &CleanupPanel::edited);
+    connect(phaseAlign_, &QCheckBox::toggled, this, &CleanupPanel::edited);
     connect(resonance_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(transient_, &QGroupBox::toggled, this, &CleanupPanel::edited);
     connect(hum_, &QGroupBox::toggled, this, &CleanupPanel::edited);
@@ -485,7 +526,7 @@ CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
             Q_EMIT revertRequested(info->id);
     });
     connect(hpSlope_, &QComboBox::currentIndexChanged, this, &CleanupPanel::edited);
-    for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_, harsh_, shimmer_, attack_, sustain_})
+    for (QDoubleSpinBox* box : {hpFrequency_, threshold_, ratio_, range_, release_, monoBelow_, width_, harsh_, shimmer_, attack_, sustain_})
         connect(box, &QDoubleSpinBox::valueChanged, this, &CleanupPanel::edited);
     connect(hpSlider_, &QSlider::valueChanged, this, [this](int position) {
         if (updating_)
@@ -591,7 +632,8 @@ void CleanupPanel::showCurrent()
     const daw::TrackCleanup& c = info->cleanup;
     const QSignalBlocker b1(bypass_), b2(dc_), b3(highPass_), b4(expander_), b5(hpSlope_), b6(hpFrequency_), b7(threshold_),
         b8(ratio_), b9(range_), b10(release_), b11(hum_), b12(humMains_), b13(humHarmonics_), b14(denoise_), b15(reduction_),
-        b16(sensitivity_), b17(transient_), b18(attack_), b19(sustain_), b20(resonance_), b21(harsh_), b22(shimmer_);
+        b16(sensitivity_), b17(transient_), b18(attack_), b19(sustain_), b20(resonance_), b21(harsh_), b22(shimmer_), b23(stereo_), b24(monoBass_),
+        b25(monoBelow_), b26(width_), b27(phaseAlign_);
     hum_->setChecked(c.hum.enabled);
     humMains_->setCurrentIndex(c.hum.frequencyHz < 55.0 ? 0 : 1);
     humHarmonics_->setValue(c.hum.harmonics);
@@ -649,6 +691,11 @@ void CleanupPanel::showCurrent()
     ratio_->setValue(c.expander.ratio);
     range_->setValue(c.expander.rangeDb);
     release_->setValue(c.expander.releaseMs);
+    stereo_->setChecked(c.stereo.enabled);
+    monoBass_->setChecked(c.stereo.monoBass);
+    monoBelow_->setValue(c.stereo.monoBelowHz);
+    width_->setValue(c.stereo.widthPercent);
+    phaseAlign_->setChecked(c.stereo.phaseAlign);
     resonance_->setChecked(c.resonance.enabled);
     harsh_->setValue(c.resonance.harshDb);
     shimmer_->setValue(c.resonance.shimmerDb);
@@ -657,7 +704,7 @@ void CleanupPanel::showCurrent()
     sustain_->setValue(c.transient.sustainDb);
     updating_ = false;
 
-    for (QWidget* w : std::initializer_list<QWidget*>{dc_, highPass_, hum_, denoise_, resonance_, expander_, transient_})
+    for (QWidget* w : std::initializer_list<QWidget*>{dc_, highPass_, stereo_, hum_, denoise_, resonance_, expander_, transient_})
         w->setEnabled(!c.bypassed);
     detectHum_->setEnabled(true); // see keepActionsEnabled in the constructor
     learn_->setEnabled(true);
@@ -685,6 +732,11 @@ daw::TrackCleanup CleanupPanel::readControls() const
     c.expander.ratio = ratio_->value();
     c.expander.rangeDb = range_->value();
     c.expander.releaseMs = release_->value();
+    c.stereo.enabled = stereo_->isChecked();
+    c.stereo.monoBass = monoBass_->isChecked();
+    c.stereo.monoBelowHz = monoBelow_->value();
+    c.stereo.widthPercent = width_->value();
+    c.stereo.phaseAlign = phaseAlign_->isChecked();
     c.resonance.enabled = resonance_->isChecked();
     c.resonance.harshDb = harsh_->value();
     c.resonance.shimmerDb = shimmer_->value();

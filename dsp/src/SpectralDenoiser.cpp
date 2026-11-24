@@ -30,6 +30,9 @@ void SpectralDenoiser::prepare(double sampleRate)
     power_.assign(kBins, 0.0f);
     gain_.assign(kBins, 1.0f);
     resonance_.prepare(sampleRate, kFftSize, kHop);
+    aligner_.prepare(sampleRate, kFftSize, kHop);
+    left_.assign(kBins, {});
+    right_.assign(kBins, {});
     for (int c = 0; c < 2; ++c) {
         input_[c].assign(kFftSize, 0.0f);
         output_[c].assign(kFftSize, 0.0f);
@@ -54,6 +57,34 @@ void SpectralDenoiser::setNoiseProfile(const float* power) noexcept
         std::copy_n(power, kBins, noise_.begin());
 }
 
+void SpectralDenoiser::setPhaseAlign(bool on) noexcept
+{
+    if (on && !align_)
+        aligner_.reset();
+    align_ = on;
+}
+
+void SpectralDenoiser::splitChannels(const std::complex<float>* z, std::complex<float>* left, std::complex<float>* right) noexcept
+{
+    // Z[k] = L[k] + i R[k] and, as l and r are real, conj(Z[N-k]) = L[k] - i R[k].
+    for (int k = 0; k < kBins; ++k) {
+        const std::complex<float> a = z[k];
+        const std::complex<float> b = std::conj(z[(kFftSize - k) % kFftSize]);
+        left[k] = 0.5f * (a + b);
+        right[k] = std::complex<float>(0.0f, -0.5f) * (a - b);
+    }
+}
+
+void SpectralDenoiser::joinChannels(const std::complex<float>* left, const std::complex<float>* right, std::complex<float>* z) noexcept
+{
+    const std::complex<float> i(0.0f, 1.0f);
+    for (int k = 0; k < kBins; ++k) {
+        z[k] = left[k] + i * right[k];
+        if (k > 0 && k < kFftSize / 2)
+            z[kFftSize - k] = std::conj(left[k]) + i * std::conj(right[k]);
+    }
+}
+
 void SpectralDenoiser::reset() noexcept
 {
     for (int c = 0; c < 2; ++c) {
@@ -62,6 +93,7 @@ void SpectralDenoiser::reset() noexcept
     }
     std::fill(lastGain_.begin(), lastGain_.end(), 1.0f);
     std::fill(lastSnr_.begin(), lastSnr_.end(), 1.0f);
+    aligner_.reset();
     fill_ = 0;
 }
 
@@ -109,12 +141,26 @@ void SpectralDenoiser::processFrame() noexcept
         }
         if (resonance)
             resonance_.process(power, gain);
-        for (int k = 0; k < kBins; ++k) {
-            const int mirror = (kFftSize - k) % kFftSize;
-            z[k] *= gain[k];
-            if (mirror != k)
-                z[mirror] *= gain[k];
-        }
+        if (!align_)
+            for (int k = 0; k < kBins; ++k) {
+                const int mirror = (kFftSize - k) % kFftSize;
+                z[k] *= gain[k];
+                if (mirror != k)
+                    z[mirror] *= gain[k];
+            }
+    }
+    if (align_) {
+        // Measured on the input, like the gains; the gains are real, so the
+        // order of gain and rotation does not matter.
+        splitChannels(z, left_.data(), right_.data());
+        aligner_.analyse(left_.data(), right_.data());
+        if (hasProfile_ || resonance)
+            for (int k = 0; k < kBins; ++k) {
+                left_[static_cast<std::size_t>(k)] *= gain_[static_cast<std::size_t>(k)];
+                right_[static_cast<std::size_t>(k)] *= gain_[static_cast<std::size_t>(k)];
+            }
+        aligner_.apply(left_.data(), right_.data());
+        joinChannels(left_.data(), right_.data(), z);
     }
 
     fft_.inverse(z);

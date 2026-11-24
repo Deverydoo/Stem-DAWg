@@ -145,9 +145,28 @@ struct ResonanceSettings {
     friend bool operator==(const ResonanceSettings&, const ResonanceSettings&) = default;
 };
 
+/// Stereo repair: mono below a frequency (separated stems often carry a wide
+/// or out-of-phase low end), width (side gain), and phase alignment, which
+/// brings left and right into step where they carry the same sound out of
+/// step, so a mono sum keeps it.
+struct StereoSettings {
+    static constexpr double kMinHz = 40.0;
+    static constexpr double kMaxHz = 300.0;
+    static constexpr double kMaxWidthPercent = 200.0;
+
+    bool enabled = false;
+    bool monoBass = true;
+    double monoBelowHz = 120.0;  // 40 .. 300
+    double widthPercent = 100.0; // 0 (mono) .. 200
+    bool phaseAlign = false;
+
+    friend bool operator==(const StereoSettings&, const StereoSettings&) = default;
+};
+
 /// Non-destructive per-track clean-up, applied before the fader in this order:
-/// DC removal, high-pass, hum removal, noise reduction and resonance
-/// suppression (one spectral stage), expander, transient shaper.
+/// DC removal, high-pass, stereo imager (mono bass, width), hum removal,
+/// noise reduction, resonance suppression and phase alignment (one spectral
+/// stage), expander, transient shaper.
 struct TrackCleanup {
     bool bypassed = false; // keeps the settings but plays the track unprocessed
     bool dcRemoval = false;
@@ -157,12 +176,13 @@ struct TrackCleanup {
     ExpanderSettings expander;
     TransientSettings transient;
     ResonanceSettings resonance;
+    StereoSettings stereo;
 
     /// True when any stage is switched on (regardless of bypass).
     bool hasStages() const noexcept
     {
         return dcRemoval || highPass.enabled || hum.enabled || denoise.enabled || expander.enabled || transient.enabled
-               || resonance.enabled;
+               || resonance.enabled || stereo.enabled;
     }
     /// True when the chain changes the sound.
     bool active() const noexcept { return !bypassed && hasStages(); }

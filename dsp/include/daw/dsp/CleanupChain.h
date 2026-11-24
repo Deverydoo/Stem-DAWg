@@ -3,9 +3,10 @@
 
 #pragma once
 
-// Per-track clean-up: DC removal -> Butterworth high-pass -> hum notches ->
-// spectral stage (noise reduction, harshness and shimmer control) ->
-// downward expander -> transient shaper.
+// Per-track clean-up: DC removal -> Butterworth high-pass -> stereo imager
+// (mono bass, width) -> hum notches -> spectral stage (noise reduction,
+// harshness and shimmer control, phase alignment) -> downward expander ->
+// transient shaper.
 //
 // The spectral stage works on overlapping FFT frames and the expander looks
 // ahead (it measures the signal kLookaheadSeconds before it is heard, so it is
@@ -22,6 +23,7 @@
 
 #include <daw/dsp/Biquad.h>
 #include <daw/dsp/SpectralDenoiser.h>
+#include <daw/dsp/Stereo.h>
 #include <daw/dsp/TransientShaper.h>
 
 #include <array>
@@ -51,12 +53,20 @@ struct CleanupParams {
     bool resonance = false;
     float resonanceHarshDb = 0.0f;   // maximum cut 2-6 kHz, 0 .. 12
     float resonanceShimmerDb = 0.0f; // maximum cut 8-17.5 kHz, 0 .. 12
+    bool stereo = false;
+    bool stereoMonoBass = false;
+    float stereoMonoBelowHz = 120.0f;
+    float stereoWidth = 1.0f;        // side gain, 0 .. 2
+    bool stereoPhaseAlign = false;
     const float* noiseProfile = nullptr; // SpectralDenoiser::kBins powers for this rate, owned by the snapshot
     bool listenRemoved = false;          // output what the chain removes instead of the result
 
-    bool active() const noexcept { return dcRemoval || highPass || hum || denoise || expander || transient || resonance; }
-    /// True when the spectral stage runs (noise reduction or resonance suppression).
-    bool spectral() const noexcept { return denoise || resonance; }
+    bool active() const noexcept
+    {
+        return dcRemoval || highPass || hum || denoise || expander || transient || resonance || stereo;
+    }
+    /// True when the spectral stage runs (noise reduction, resonance suppression or phase alignment).
+    bool spectral() const noexcept { return denoise || resonance || (stereo && stereoPhaseAlign); }
 
     friend bool operator==(const CleanupParams&, const CleanupParams&) = default;
 };
@@ -148,6 +158,8 @@ private:
     double gain_ = 1.0;
     double minGainDb_ = 0.0;
     int hold_ = 0;
+
+    StereoImager imager_;
 
     // Transient shaper, looking ahead as far as the expander.
     TransientShaper shaper_;

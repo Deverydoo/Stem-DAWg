@@ -5,9 +5,9 @@
 
 // The clean-up chain's spectral stage: learned-profile noise reduction for
 // stationary noise (fans, air conditioning, hiss, the steady part of a
-// separation bed) and resonance suppression (harshness and shimmer control,
-// see ResonanceSuppressor). Both work on the same frames, so turning on the
-// second costs no extra delay.
+// separation bed), resonance suppression (harshness and shimmer control, see
+// ResonanceSuppressor) and phase alignment (see PhaseAligner in Stereo.h).
+// All three work on the same frames, so each costs no extra delay.
 //
 // Short-time Fourier transform: kFftSize-point frames, 75 % overlap, square-root
 // Hann analysis and synthesis windows (perfect reconstruction). Both channels
@@ -21,12 +21,14 @@
 // quietest parts of the track (session/NoiseProfile).
 //
 // The resonance gains are measured on the same input spectrum and multiply
-// the noise gains.
+// the noise gains. Phase alignment then turns each channel's bins; it needs
+// the channels apart (splitChannels), which the gains alone do not.
 //
 // Delay: exactly latency() == kFftSize frames. Real-time safe after prepare().
 
 #include <daw/dsp/Fft.h>
 #include <daw/dsp/ResonanceSuppressor.h>
+#include <daw/dsp/Stereo.h>
 
 #include <complex>
 #include <vector>
@@ -62,6 +64,10 @@ public:
     void setResonance(const ResonanceParams& params) noexcept { resonance_.setParams(params); }
     const ResonanceSuppressor& resonance() const noexcept { return resonance_; }
 
+    /// Phase alignment on or off. It starts from fresh statistics when switched on.
+    void setPhaseAlign(bool on) noexcept;
+    bool phaseAlign() const noexcept { return align_; }
+
     /// Clears the frames and the noise gains. The resonance detector keeps its
     /// memory (see ResonanceSuppressor).
     void reset() noexcept;
@@ -73,6 +79,10 @@ public:
     /// it. Used to learn profiles. `scratch` must hold kFftSize values.
     static void framePower(const float* left, const float* right, float* power, std::complex<float>* scratch,
                            const Fft& fft, const float* window) noexcept;
+    /// Separates the spectrum of z = l + i r (kFftSize values) into the
+    /// spectra of l and r (kBins values each), and joins them back.
+    static void splitChannels(const std::complex<float>* z, std::complex<float>* left, std::complex<float>* right) noexcept;
+    static void joinChannels(const std::complex<float>* left, const std::complex<float>* right, std::complex<float>* z) noexcept;
     /// The square-root Hann window used for analysis and synthesis.
     static std::vector<float> window();
 
@@ -85,6 +95,8 @@ private:
     float floorGain_ = 0.25f;
     bool hasProfile_ = false;
     ResonanceSuppressor resonance_;
+    PhaseAligner aligner_;
+    bool align_ = false;
 
     std::vector<float> window_;
     std::vector<float> noise_;      // per bin
@@ -92,6 +104,7 @@ private:
     std::vector<float> lastSnr_;    // per bin, previous a-posteriori SNR
     std::vector<float> power_;      // per bin, current frame
     std::vector<float> gain_;       // per bin, current frame
+    std::vector<std::complex<float>> left_, right_; // per bin, current frame, for phase alignment
     std::vector<float> input_[2];   // last kFftSize input samples
     std::vector<float> output_[2];  // overlap-add accumulator
     std::vector<std::complex<float>> spectrum_;

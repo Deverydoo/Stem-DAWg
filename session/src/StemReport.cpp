@@ -22,6 +22,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <memory>
+#include <numbers>
 
 namespace daw {
 
@@ -86,6 +87,18 @@ constexpr double kResonanceMinSeconds = 5.0;   // of counted frames
 // than this is masked there by the others (on the 9-stem export, the bass's
 // 2 kHz peak sits in 4 % of that band).
 constexpr double kResonanceMinBandShare = 0.10;
+// Stereo. A stem whose side energy below kLowEndHz comes within this of its
+// mid energy, and which supplies at least kWideLowEndShare of all stems' side
+// energy there, gets mono bass suggested (professional masters keep the low
+// end within about -15 dB; on the 9-stem export the bass, guitar and synth
+// supply 44, 22 and 16 % of it). A range that loses kMonoLossDb or more in a
+// mono sum, of which phase alignment wins back kMonoGainDb or more, gets
+// phase alignment suggested (3 of 24 Suno songs; decorrelated stems, which
+// alignment cannot help, do not qualify).
+constexpr double kWideLowEndDb = -12.0;
+constexpr double kWideLowEndShare = 0.10;
+constexpr double kMonoLossDb = -2.0;
+constexpr double kMonoGainDb = 1.0;
 
 std::string format(const char* pattern, ...)
 {
@@ -160,6 +173,14 @@ struct TrackState {
     std::vector<std::int64_t> resonanceRings; // frames that cut, per bin
     std::int64_t resonanceFrames = 0;
     void addResonanceFrame(const Fft& fft, const float* window);
+
+    // Stereo: the low end's mid and side, and the mono sum per kMonoBandEdgesHz range.
+    std::array<Biquad, 2> lowMidFilter{}, lowSideFilter{};
+    double lowMidEnergy = 0.0, lowSideEnergy = 0.0;
+    PhaseAligner aligner;
+    std::vector<std::complex<float>> spectrumLeft, spectrumRight;
+    std::array<int, kMonoBandCount + 1> monoBins{};
+    std::array<double, kMonoBandCount> stereoPower{}, monoPower{}, alignedPower{};
 
     // Attacks.
     Biquad attackFilter;
@@ -236,6 +257,19 @@ void TrackState::addResonanceFrame(const Fft& fft, const float* window)
     SpectralDenoiser::framePower(resonanceInput[0].data(), resonanceInput[1].data(), resonancePower.data(),
                                  resonanceScratch.data(), fft, window);
     resonance.analyse(resonancePower.data());
+
+    // The mono sum per range, as it is and with the phase aligner's rotations.
+    SpectralDenoiser::splitChannels(resonanceScratch.data(), spectrumLeft.data(), spectrumRight.data());
+    aligner.analyse(spectrumLeft.data(), spectrumRight.data());
+    for (std::size_t band = 0; band < kMonoBandCount; ++band)
+        for (int k = monoBins[band]; k < monoBins[band + 1]; ++k) {
+            const std::complex<float> l = spectrumLeft[static_cast<std::size_t>(k)];
+            const std::complex<float> r = spectrumRight[static_cast<std::size_t>(k)];
+            const std::complex<float> turn = std::polar(1.0f, 0.5f * aligner.rotation(k));
+            stereoPower[band] += 0.5 * (std::norm(l) + std::norm(r));
+            monoPower[band] += 0.25 * std::norm(l + r);
+            alignedPower[band] += 0.25 * std::norm(l * std::conj(turn) + r * turn);
+        }
     if (meanSquare > std::pow(10.0, kResonanceActiveDbfs / 10.0)) {
         for (int k = 0; k < resonance.bins(); ++k) {
             const float cut = resonance.cutDb(k);
@@ -250,6 +284,13 @@ void TrackState::addResonanceFrame(const Fft& fft, const float* window)
     }
     for (auto& channel : resonanceInput)
         std::copy(channel.begin() + kResonanceHop, channel.end(), channel.begin());
+}
+
+// "500 Hz-2 kHz" for a kMonoBandEdgesHz range.
+std::string bandName(std::size_t band)
+{
+    const auto hz = [](double v) { return v >= 1000.0 ? format("%.0f kHz", v / 1000.0) : format("%.0f Hz", v); };
+    return hz(kMonoBandEdgesHz[band]) + "-" + hz(kMonoBandEdgesHz[band + 1]);
 }
 
 // The track's share of all tracks' energy in the StemBand that holds `hz`.
@@ -336,6 +377,14 @@ TrackCleanup CleanupFix::applyTo(TrackCleanup cleanup) const
         cleanup.expander = *expander;
     if (transient)
         cleanup.transient = *transient;
+    if (stereo) {
+        if (cleanup.stereo.enabled) {
+            cleanup.stereo.monoBass = cleanup.stereo.monoBass || stereo->monoBass;
+            cleanup.stereo.phaseAlign = cleanup.stereo.phaseAlign || stereo->phaseAlign;
+        } else {
+            cleanup.stereo = *stereo;
+        }
+    }
     if (resonance) {
         if (cleanup.resonance.enabled) {
             cleanup.resonance.harshDb = std::max(cleanup.resonance.harshDb, resonance->harshDb);
@@ -405,6 +454,15 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
         t.resonanceCut.assign(SpectralDenoiser::kBins, 0.0);
         t.resonanceRingExcess.assign(SpectralDenoiser::kBins, 0.0);
         t.resonanceRings.assign(SpectralDenoiser::kBins, 0);
+        for (auto* filters : {&t.lowMidFilter, &t.lowSideFilter})
+            for (Biquad& section : *filters) // Linkwitz-Riley low-pass: the complement of mono bass's high-pass
+                section.setCoefficients(BiquadCoefficients::lowPass(kLowEndHz, std::numbers::sqrt2 / 2.0, rate));
+        t.aligner.prepare(rate, SpectralDenoiser::kFftSize, kResonanceHop);
+        t.spectrumLeft.assign(SpectralDenoiser::kBins, {});
+        t.spectrumRight.assign(SpectralDenoiser::kBins, {});
+        for (std::size_t edge = 0; edge <= kMonoBandCount; ++edge)
+            t.monoBins[edge] = std::clamp(static_cast<int>(std::lround(kMonoBandEdgesHz[edge] * SpectralDenoiser::kFftSize / rate)),
+                                          1, SpectralDenoiser::kBins - 1);
     }
     const Fft resonanceFft(SpectralDenoiser::kFftSize);
     const std::vector<float> resonanceWindow = SpectralDenoiser::window();
@@ -485,6 +543,11 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
                 t.attackPower = 0.0;
                 t.attackPosition = 0;
             }
+
+            const double lowMid = t.lowMidFilter[1].process(t.lowMidFilter[0].process(mid));
+            const double lowSide = t.lowSideFilter[1].process(t.lowSideFilter[0].process(side));
+            t.lowMidEnergy += lowMid * lowMid;
+            t.lowSideEnergy += lowSide * lowSide;
 
             const auto slot = static_cast<std::size_t>(SpectralDenoiser::kFftSize - kResonanceHop + t.resonanceFill);
             t.resonanceInput[0][slot] = static_cast<float>(l);
@@ -644,8 +707,22 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
                 }
             }
         }
+        // Stereo.
+        const double lowEnergy = t.lowMidEnergy + t.lowSideEnergy;
+        if (lowEnergy > 1e-6 * std::max(t.midEnergy + t.sideEnergy, 1e-30) && t.lowMidEnergy > 0.0)
+            r.lowSideDb = toDb(t.lowSideEnergy / t.lowMidEnergy);
+        for (std::size_t band = 0; band < kMonoBandCount; ++band)
+            if (t.stereoPower[band] > 0.0) {
+                r.mono[band].lossDb = toDb(std::max(t.monoPower[band], 1e-30) / t.stereoPower[band]);
+                r.mono[band].alignedLossDb = toDb(std::max(t.alignedPower[band], 1e-30) / t.stereoPower[band]);
+            }
         report.tracks.push_back(std::move(r));
     }
+    double lowSideSum = 0.0;
+    for (const TrackState& t : tracks)
+        lowSideSum += t.lowSideEnergy;
+    for (std::size_t i = 0; i < n; ++i)
+        report.tracks[i].lowSideShare = lowSideSum > 0.0 ? tracks[i].lowSideEnergy / lowSideSum : 0.0;
 
     // ---- pairs ------------------------------------------------------------------
     std::size_t p = 0;
@@ -813,6 +890,51 @@ std::vector<StemAdvice> adviseStems(const StemReport& report)
                 fix.harshDb = 0.0;
                 fix.shimmerDb = kResonanceProbeDb;
                 advice.back().fixes.push_back({.track = i, .resonance = fix});
+            }
+        }
+
+        // A wide low end, and ranges that cancel in a mono sum.
+        if (t.levelShare >= kAudibleShare) {
+            const StereoSettings& current = t.cleanup.stereo;
+            const bool stereoOn = t.cleanup.active() && current.enabled;
+            if (t.lowSideDb && *t.lowSideDb >= kWideLowEndDb && t.lowSideShare >= kWideLowEndShare
+                && !(stereoOn && current.monoBass)) {
+                const double sideDb = *t.lowSideDb;
+                const std::string side = sideDb < -0.5  ? format("the side signal is only %.0f dB under the mid", -sideDb)
+                                         : sideDb < 0.5 ? std::string("the side signal is as loud as the mid")
+                                                        : format("the side signal is %.0f dB louder than the mid", sideDb);
+                add(AdviceSeverity::Suggestion, "wide-low-end", i, std::nullopt,
+                    format("%s: below %.0f Hz its left and right channels differ (%s), and it carries %.0f %% of the "
+                           "stems' stereo low end. A low end that is not mono loses punch on mono systems and in clubs. "
+                           "Mono below %.0f Hz fixes it and keeps the stereo image above.",
+                           name(i), kLowEndHz, side.c_str(), t.lowSideShare * 100.0, kLowEndHz));
+                StereoSettings fix;
+                fix.enabled = true;
+                fix.monoBass = true;
+                fix.monoBelowHz = kLowEndHz;
+                advice.back().fixes.push_back({.track = i, .stereo = fix});
+            }
+            std::optional<std::size_t> worst;
+            for (std::size_t band = 0; band < kMonoBandCount; ++band) {
+                const MonoBand& m = t.mono[band];
+                const double centre = std::sqrt(kMonoBandEdgesHz[band] * kMonoBandEdgesHz[band + 1]);
+                if (m.lossDb <= kMonoLossDb && m.alignedLossDb - m.lossDb >= kMonoGainDb
+                    && bandShareOfMix(report, i, centre) >= kResonanceMinBandShare
+                    && (!worst || m.lossDb < t.mono[*worst].lossDb))
+                    worst = band;
+            }
+            if (worst && !(stereoOn && current.phaseAlign)) {
+                const MonoBand& m = t.mono[*worst];
+                add(AdviceSeverity::Suggestion, "mono-loss", i, std::nullopt,
+                    format("%s: summed to mono (phones, Bluetooth speakers, club systems), its %s range drops by %.1f dB, "
+                           "because left and right carry the same sound out of step. Phase alignment brings them into "
+                           "step: about %.1f dB comes back in mono, while the stereo sound keeps its level.",
+                           name(i), bandName(*worst).c_str(), -m.lossDb, m.alignedLossDb - m.lossDb));
+                StereoSettings fix;
+                fix.enabled = true;
+                fix.monoBass = false;
+                fix.phaseAlign = true;
+                advice.back().fixes.push_back({.track = i, .stereo = fix});
             }
         }
 
@@ -990,6 +1112,14 @@ std::string describeCleanup(const TrackCleanup& cleanup)
                                                : format("denoise %.0f dB", cleanup.denoise.reductionDb));
     if (cleanup.expander.enabled)
         append(format("expander %.0f dB", cleanup.expander.thresholdDb));
+    if (cleanup.stereo.enabled) {
+        if (cleanup.stereo.monoBass)
+            append(format("mono <%.0f Hz", cleanup.stereo.monoBelowHz));
+        if (cleanup.stereo.widthPercent != 100.0)
+            append(format("width %.0f %%", cleanup.stereo.widthPercent));
+        if (cleanup.stereo.phaseAlign)
+            append("phase align");
+    }
     if (cleanup.resonance.enabled) {
         if (cleanup.resonance.harshDb > 0.0)
             append(format("harshness %.0f dB", cleanup.resonance.harshDb));
@@ -1018,6 +1148,15 @@ nlohmann::json toJson(const StemReport& report)
                                  {"excessDb", f.excessDb}}
                           : json(nullptr);
     };
+    auto monoLoss = [](const TrackStemReport& t) {
+        json bands = json::array();
+        for (std::size_t b = 0; b < kMonoBandCount; ++b)
+            bands.push_back({{"lowHz", kMonoBandEdgesHz[b]},
+                             {"highHz", kMonoBandEdgesHz[b + 1]},
+                             {"lossDb", t.mono[b].lossDb},
+                             {"alignedLossDb", t.mono[b].alignedLossDb}});
+        return bands;
+    };
     json tracks = json::array();
     for (const TrackStemReport& t : report.tracks) {
         json bands = json::object();
@@ -1040,6 +1179,9 @@ nlohmann::json toJson(const StemReport& report)
                           {"attackMs", t.attackMs ? json(*t.attackMs) : json(nullptr)},
                           {"harshness", resonance(t.harshness)},
                           {"shimmer", resonance(t.shimmer)},
+                          {"lowSideDb", t.lowSideDb ? json(*t.lowSideDb) : json(nullptr)},
+                          {"lowSideShare", t.lowSideShare},
+                          {"monoLoss", monoLoss(t)},
                           {"sideRatio", t.sideRatio},
                           {"bandShare", bands},
                           {"lowEndShare", t.lowEndShare},
@@ -1077,6 +1219,8 @@ nlohmann::json toJson(const StemReport& report)
                     fix["transient"] = full["transient"];
                 if (f.resonance)
                     fix["resonance"] = full["resonance"];
+                if (f.stereo)
+                    fix["stereo"] = full["stereo"];
                 fixes.push_back(std::move(fix));
             }
             item["fixes"] = std::move(fixes);

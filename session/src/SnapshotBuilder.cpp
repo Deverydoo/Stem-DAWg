@@ -55,6 +55,11 @@ CleanupParams cleanupParams(const TrackCleanup& cleanup) noexcept
     p.resonance = c.resonance.enabled;
     p.resonanceHarshDb = static_cast<float>(c.resonance.harshDb);
     p.resonanceShimmerDb = static_cast<float>(c.resonance.shimmerDb);
+    p.stereo = c.stereo.enabled;
+    p.stereoMonoBass = c.stereo.monoBass;
+    p.stereoMonoBelowHz = static_cast<float>(c.stereo.monoBelowHz);
+    p.stereoWidth = static_cast<float>(c.stereo.widthPercent / 100.0);
+    p.stereoPhaseAlign = c.stereo.phaseAlign;
     return p;
 }
 

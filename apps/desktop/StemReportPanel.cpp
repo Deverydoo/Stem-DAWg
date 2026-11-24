@@ -277,6 +277,12 @@ QString StemReportPanel::describeFix(const daw::StemReport& report, const daw::C
         parts << tr("transient shaper, attack %1 dB, sustain %2 dB")
                      .arg(fix.transient->attackDb, 0, 'f', 0)
                      .arg(fix.transient->sustainDb, 0, 'f', 0);
+    if (fix.stereo && fix.stereo->enabled) {
+        if (fix.stereo->monoBass)
+            parts << tr("mono below %1 Hz").arg(fix.stereo->monoBelowHz, 0, 'f', 0);
+        if (fix.stereo->phaseAlign)
+            parts << tr("phase alignment");
+    }
     if (fix.resonance && fix.resonance->enabled) {
         if (fix.resonance->harshDb > 0.0)
             parts << tr("harshness control (2-6 kHz) up to %1 dB").arg(fix.resonance->harshDb, 0, 'f', 0);

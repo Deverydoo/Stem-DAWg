@@ -68,16 +68,32 @@ void print(const StemReport& r)
             std::snprintf(text, sizeof text, "%.1fk/%.1f", f.hz / 1000.0, f.cutDb);
         return std::string(text);
     };
-    std::printf("%-22s %6s %7s %7s %6s %7s %6s %6s %6s %7s %6s %7s %10s %10s  %s\n", "Track", "Share", "LUFS", "Peak", "Active",
-                "Floor", "Low", "Sub", "Corr", "Centre", "Hits/m", "Attack", "Harsh", "Shimmer", "Clean-up");
+    // Stereo: side below 120 Hz relative to mid, and the range that loses most
+    // in a mono sum, e.g. "-3.0>-1.2" (as it is > with phase alignment).
+    const auto lowSide = [](const TrackStemReport& t) {
+        char text[32] = "-";
+        if (t.lowSideDb)
+            std::snprintf(text, sizeof text, "%.0f/%.0f%%", *t.lowSideDb, t.lowSideShare * 100.0);
+        return std::string(text);
+    };
+    const auto mono = [](const TrackStemReport& t) {
+        const auto worst = std::min_element(t.mono.begin(), t.mono.end(),
+                                            [](const MonoBand& a, const MonoBand& b) { return a.lossDb < b.lossDb; });
+        char text[32];
+        std::snprintf(text, sizeof text, "%.1f>%.1f", worst->lossDb, worst->alignedLossDb);
+        return std::string(text);
+    };
+    std::printf("%-22s %6s %7s %7s %6s %7s %6s %6s %6s %7s %6s %7s %10s %10s %9s %10s  %s\n", "Track", "Share", "LUFS", "Peak",
+                "Active", "Floor", "Low", "Sub", "Corr", "Centre", "Hits/m", "Attack", "Harsh", "Shimmer", "LowSide", "Mono",
+                "Clean-up");
     for (const auto& t : r.tracks)
-        std::printf("%-22.22s %5.1f%% %7s %7s %5.0f%% %7s %5.0f%% %5.0f%% %6s %6.0fHz %6.0f %5sms %10s %10s  %s\n", t.name.c_str(),
+        std::printf("%-22.22s %5.1f%% %7s %7s %5.0f%% %7s %5.0f%% %5.0f%% %6s %6.0fHz %6.0f %5sms %10s %10s %9s %10s  %s\n", t.name.c_str(),
                     t.levelShare * 100.0,
                     db(t.loudness.integratedLufs).c_str(), db(t.loudness.samplePeakDbfs).c_str(), t.activeFraction * 100.0,
                     t.noiseFloorDbfs ? db(*t.noiseFloorDbfs).c_str() : "-", t.lowEndShare * 100.0,
                     t.bandShare[0] * 100.0, t.stereoCorrelation ? std::to_string(*t.stereoCorrelation).substr(0, 5).c_str() : "-",
                     t.centroidHz, t.hitsPerMinute, t.attackMs ? db(*t.attackMs).c_str() : "-", resonance(t.harshness).c_str(),
-                    resonance(t.shimmer).c_str(), describeCleanup(t.cleanup).c_str());
+                    resonance(t.shimmer).c_str(), lowSide(t).c_str(), mono(t).c_str(), describeCleanup(t.cleanup).c_str());
     std::printf("\nStrongest overlaps (low / mid / high / full):\n");
     auto pairs = r.pairs;
     std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) { return a.correlation[3] > b.correlation[3]; });

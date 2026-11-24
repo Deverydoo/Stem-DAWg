@@ -1,12 +1,11 @@
 # Milestone 4: AI-artifact repair
 
-Stem separators leave artifacts that a home recording never has. M4 repairs them. This document covers what is done so far:
+Stem separators leave artifacts that a home recording never has. M4 repairs them:
 
 - **Bleed suppression:** each stem keeps a little of every other stem (the hi-hat ghosting through the vocal, the kick inside the bass). Bleed suppression turns that down, judging every stem against all the others.
 - **Transient restoration:** AI-generated drums rise to each hit slowly and sound soft. The stem report measures how slowly; a transient shaper in the clean-up chain makes the hits rise faster without making them louder.
 - **Harshness and shimmer control:** narrow peaks that keep ringing above the sound around them (a partial at 2–4 kHz that outlasts the notes, steady generator tones near 16 kHz) are turned down while they ring, and nothing else is.
-
-Stereo repair follows (see [the roadmap](../ROADMAP.md#m4-ai-artifact-repair)).
+- **Stereo repair:** the low end is made mono, and where both channels carry the same sound out of step, they are brought into step so a mono sum keeps it.
 
 ## 1. Bleed suppression (`dsp/BleedSuppressor`, `session/BleedTools`)
 
@@ -252,6 +251,64 @@ Steady peaks come down by most of the way; a resonance that rings for a few seco
   - applied, both peaks come down by more than 4 dB and the advice is gone.
 - Serialization round trip and clamping, and the snapshot carrying the settings to the engine.
 
-## Still to come in M4
+## 4. Stereo repair (`dsp/Stereo`: `StereoImager`, `PhaseAligner`)
 
-- **Stereo repair:** mono low end, correlation-guided width.
+### What is wrong with AI stereo
+
+Measured per band (side energy against mid, correlation, coherence) on the 9-stem export and 24 Suno songs:
+
+- **The separated stems' low end is not mono.** In a professional master everything below about 120 Hz is close to mono. Summed, the 9 stems have side energy only 11 dB under the mid below 120 Hz; the guitar stem's low end has more side than mid and is out of phase in 75 % of its 0.3 s windows. The bass, guitar and synth stems supply 44, 22 and 16 % of that side energy. The full songs are mostly fine there (a mono sum loses at most 0.7 dB below 120 Hz), but 5 of the 24 still have side energy within 12 dB of the mid, one with a correlation of 0.48 at 20–60 Hz.
+- **Some songs carry the same sound in both channels out of step.** In 3 of the 24 songs, the 500 Hz–8 kHz range loses 2.5–3.6 dB when summed to mono (phones, Bluetooth speakers, club systems) and is out of phase 43–77 % of the time. Its coherence is 0.5–0.7 while its correlation is near zero or negative: the channels are not unrelated, they are shifted against each other.
+
+The usual width control does not help the second case: a mono sum is the mid signal, and narrowing only turns the side signal down, so stereo listeners lose what mono listeners already miss.
+
+### The stage
+
+A **Stereo** group in the clean-up chain, with three controls:
+
+- **Mono below** (default 120 Hz, 40–300 Hz): the side signal is high-passed (Linkwitz-Riley, 24 dB/octave), so everything below the frequency is mono and the mid signal passes untouched. It runs on the waveform, right after the high-pass, with no delay.
+- **Width** (0–200 %): gain on the side signal. 0 % is mono; narrowing tames a phasey, swirling stem.
+- **Align phase (mono-safe)**, in the spectral stage (the same frames as noise reduction and harshness control, so no extra delay). Per bin it follows the cross-spectrum of the two channels, averaged over 200 ms. Where they are more than 45° apart, it turns them towards each other, each by half the excess, weighted by their coherence (none below 0.2, all of it above 0.5). A rotation keeps each channel's level at every frequency: the stereo sound keeps its level and tone, and the mono sum gets back what cancelled. Unrelated channels (real width, reverb, independent parts) have no consistent phase to correct and are left alone, as is everything below 120 Hz.
+
+Changes glide over 20 ms. Near 180° the measured phase flips sign from frame to frame and from bin to bin; neighbouring bins turned opposite ways smear the frame (an inverted test signal lost 0.7 dB per channel), so the aligner turns the positive way there and each bin keeps its direction. After a reset the rotations fade in over the 200 ms the averages need, because a single frame always looks coherent.
+
+### In the stem report
+
+- **Low end:** side energy over mid energy below 120 Hz (`lowSideDb`, *LowSide* in `stem-report`), and the stem's share of all stems' side energy there. **Advice** (*wide-low-end*) when the side comes within 12 dB of the mid and the stem carries at least 10 % of the stereo low end, with mono below 120 Hz as the fix. On the 9-stem export: bass, guitar and synth.
+- **Mono sum:** per range (120–500 Hz, 500 Hz–2 kHz, 2–8 kHz, 8–16 kHz) what a mono sum loses, as it is and with the phase aligner's rotations applied to the measured frames (`monoLoss`, *Mono* in `stem-report`). **Advice** (*mono-loss*) when a range loses 2 dB or more, alignment would win back 1 dB or more, and the stem supplies at least 10 % of that band. It fires on the 3 songs above and on none of the 9 stems: their losses come from unrelated channels, which alignment cannot fix, so the report does not promise it.
+
+### What did not work, and why
+
+| Attempt | Result |
+|---|---|
+| Rotating every bin by its full phase difference (limit 30°, coherence from 0.1) | The mono loss nearly vanished (-3.0 to -0.7 dB), but the channels lost up to 0.6 dB and independent noise started to be rotated. |
+| Averaging each bin's rotation with its neighbours | Took the channels' loss from 0.12 to 0.03 LU, but also a third of the mono gain: one of the three songs no longer qualified. |
+| A free direction near 180° | Neighbouring bins turned opposite ways: 0.7 dB lost per channel on an inverted signal. |
+
+### Measured
+
+Applied through `stem-report --apply-fixes`, measured by the report afterwards:
+
+| Song | Fix | Before | After |
+|---|---|---|---|
+| A | phase alignment | 500 Hz–2 kHz loses 2.9 dB in mono | 1.2 dB; stereo loudness -0.12 LU |
+| B | phase alignment | 500 Hz–2 kHz loses 2.8 dB | 1.3 dB; stereo loudness -0.11 LU |
+| C | phase alignment | 2–8 kHz loses 3.6 dB | 2.3 dB |
+| D | mono below 120 Hz | side 9 dB under the mid below 120 Hz | 22 dB under |
+| E | mono below 120 Hz | side 7 dB under the mid | 27 dB under |
+
+Below 120 Hz the report's low-pass meets the mono-bass high-pass at the same frequency, so a little side signal between 80 and 120 Hz stays in the measurement. On synthetic signals, channels in quadrature or inverted come out with a mono loss under 1 dB (the 45° left alone costs 0.7 dB) and their levels within 0.3 dB. Mono bass and width cost practically nothing; with phase alignment the spectral stage takes about 0.8 % of one CPU core per track.
+
+### Tests
+
+- `daw_dsp_tests` `[stereo]`:
+  - at neutral settings the output is bit-identical to the chain without the stage;
+  - mono bass takes side energy at 30–60 Hz from 0 dB to under -20 dB against the mid, leaves the side above 500 Hz within 0.1 dB, and passes the mid untouched;
+  - width 0 % gives identical channels, 200 % raises the side by 6 dB and leaves the mid;
+  - a width change glides (no step larger than the signal's own);
+  - phase alignment brings channels 90° and 180° apart to a mono loss under 1 dB with their levels within 0.3 dB, passes mono exactly, leaves independent noise at -3 dB in mono and an inverted 40–100 Hz inverted;
+  - only phase alignment restarts the chain; no allocation.
+- `daw_integration_tests` `[stereo]`: the report flags a wide bass (not a mono kick), flags a pad in quadrature (not unrelated keys), the two fixes merge, the JSON carries the readings and fixes, and after applying them the bass's low end is mono, the pad loses under 1.2 dB in mono, and the advice is gone.
+- Serialization round trip and clamping, and the snapshot carrying the settings to the engine.
+
+With stereo repair, M4 is complete. Mastering (M5) is next.

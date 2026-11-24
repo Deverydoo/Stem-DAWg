@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <numbers>
 #include <random>
 
@@ -475,4 +476,109 @@ TEST_CASE("Stem report finds resonances and generator tones and suggests harshne
     CHECK(after->tracks[hats].shimmer.excessDb < before.tracks[hats].shimmer.excessDb - 4.0);
     CHECK(findAdvice(*after, "harsh-resonance", pad) == nullptr);
     CHECK(findAdvice(*after, "shimmer-tones", hats) == nullptr);
+}
+
+namespace {
+
+/// Steady partials with random phases between lowHz and highHz; the right
+/// channel carries them turned by `degrees`. With `noise`, the channels are
+/// independent Gaussian noise instead.
+std::shared_ptr<AudioAsset> stereoPartials(double lowHz, double highHz, double degrees, double amplitude, unsigned seed,
+                                           bool noise = false)
+{
+    const auto frames = static_cast<std::int64_t>(kSeconds * kRate);
+    auto asset = AudioAsset::create(2, frames, kRate);
+    std::mt19937 rng(seed);
+    if (noise) {
+        std::normal_distribution<float> n(0.0f, static_cast<float>(amplitude));
+        for (auto& channel : asset->channels)
+            for (float& v : channel)
+                v = n(rng);
+        return asset;
+    }
+    std::uniform_real_distribution<double> phase(0.0, 2.0 * std::numbers::pi);
+    const int count = highHz > 2.0 * lowHz ? 48 : 1;
+    for (int p = 0; p < count; ++p) {
+        const double hz = count == 1 ? lowHz : lowHz * std::pow(highHz / lowHz, (p + 0.5) / count);
+        const double a = amplitude / std::sqrt(static_cast<double>(count));
+        std::complex<double> left = std::polar(a, phase(rng));
+        std::complex<double> right = left * std::polar(1.0, -degrees * std::numbers::pi / 180.0);
+        const std::complex<double> step = std::polar(1.0, 2.0 * std::numbers::pi * hz / kRate);
+        for (std::int64_t i = 0; i < frames; ++i) {
+            asset->channels[0][static_cast<std::size_t>(i)] += static_cast<float>(left.real());
+            asset->channels[1][static_cast<std::size_t>(i)] += static_cast<float>(right.real());
+            left *= step;
+            right *= step;
+        }
+    }
+    return asset;
+}
+
+} // namespace
+
+TEST_CASE("Stem report checks the low end and the mono sum and suggests stereo repair", "[session][stems][stereo]")
+{
+    Fixture f;
+    f.model.sampleRate = kRate;
+    const std::size_t bass = f.add("Bass", stereoPartials(50.0, 50.0, 120.0, 0.3, 1)); // wide, partly out of phase
+    const std::size_t kick = f.add("Kick", stereoPartials(60.0, 60.0, 0.0, 0.3, 2));   // mono
+    const std::size_t pad = f.add("Pad", stereoPartials(150.0, 15000.0, 90.0, 0.2, 3)); // coherent, out of step
+    const std::size_t keys = f.add("Keys", stereoPartials(0.0, 0.0, 0.0, 0.03, 4, true)); // unrelated channels
+
+    const auto result = analyzeStems(f.model, f.pool);
+    REQUIRE(result.ok());
+    const StemReport& before = *result;
+    REQUIRE(before.tracks[bass].lowSideDb.has_value());
+    CHECK(*before.tracks[bass].lowSideDb > 3.0); // 120 degrees apart: side 4.8 dB above mid
+    CHECK(before.tracks[bass].lowSideShare > 0.8);
+    REQUIRE(before.tracks[kick].lowSideDb.has_value());
+    CHECK(*before.tracks[kick].lowSideDb < -60.0);
+    // In quadrature, a mono sum loses 3 dB; phase alignment leaves 45 degrees (-0.7 dB).
+    const MonoBand& padMid = before.tracks[pad].mono[1];
+    CHECK(padMid.lossDb == Approx(-3.0).margin(0.3));
+    CHECK(padMid.alignedLossDb > -1.2);
+    const MonoBand& keysMid = before.tracks[keys].mono[1];
+    CHECK(keysMid.lossDb == Approx(-3.0).margin(0.3));
+    CHECK(keysMid.alignedLossDb - keysMid.lossDb < 0.3);
+
+    const StemAdvice* wide = findAdvice(before, "wide-low-end", bass);
+    REQUIRE(wide != nullptr);
+    CHECK(wide->message.find("louder than the mid") != std::string::npos);
+    REQUIRE(wide->fixes.size() == 1);
+    REQUIRE(wide->fixes[0].stereo.has_value());
+    CHECK(wide->fixes[0].stereo->monoBass);
+    CHECK_FALSE(wide->fixes[0].stereo->phaseAlign);
+    CHECK(findAdvice(before, "wide-low-end", kick) == nullptr);
+    const StemAdvice* mono = findAdvice(before, "mono-loss", pad);
+    REQUIRE(mono != nullptr);
+    REQUIRE(mono->fixes.size() == 1);
+    CHECK(mono->fixes[0].stereo->phaseAlign);
+    CHECK(findAdvice(before, "mono-loss", keys) == nullptr); // nothing alignment could win back
+
+    // Both fixes on one track merge.
+    CleanupFix alignBass = mono->fixes[0];
+    alignBass.track = bass;
+    const TrackCleanup both = alignBass.applyTo(wide->fixes[0].applyTo({}));
+    CHECK(both.stereo.monoBass);
+    CHECK(both.stereo.phaseAlign);
+    CHECK(describeCleanup(both) == "mono <120 Hz, phase align");
+
+    const auto json = toJson(before);
+    CHECK(json["tracks"][pad]["monoLoss"].size() == kMonoBandCount);
+    CHECK(json["tracks"][bass]["lowSideDb"].is_number());
+    bool listed = false;
+    for (const auto& item : json["advice"])
+        if (item["code"] == "mono-loss")
+            listed = item["fixes"][0]["stereo"]["phaseAlign"] == true;
+    CHECK(listed);
+
+    // Applied: the bass's low end is mono, the pad survives a mono sum, and the advice is gone.
+    CHECK(applyCleanupFixes(f.model, before, {wide->fixes[0], mono->fixes[0]}) == 2);
+    const auto after = analyzeStems(f.model, f.pool);
+    REQUIRE(after.ok());
+    REQUIRE(after->tracks[bass].lowSideDb.has_value());
+    CHECK(*after->tracks[bass].lowSideDb < -20.0);
+    CHECK(after->tracks[pad].mono[1].lossDb > -1.2);
+    CHECK(findAdvice(*after, "wide-low-end", bass) == nullptr);
+    CHECK(findAdvice(*after, "mono-loss", pad) == nullptr);
 }
