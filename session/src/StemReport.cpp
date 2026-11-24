@@ -306,14 +306,16 @@ double bandShareOfMix(const StemReport& report, std::size_t track, double hz)
     return total > 0.0 ? t.levelShare * t.bandShare[band] / total : 0.0;
 }
 
-std::unique_ptr<AudioEngine> makeEngine(const ProjectModel& model, const MediaPool& media, double rate)
+// `master`: run the master bus (the mix as heard); single stems are measured without it.
+std::unique_ptr<AudioEngine> makeEngine(const ProjectModel& model, const MediaPool& media, double rate, bool master = false)
 {
     auto engine = std::make_unique<AudioEngine>();
     engine->prepare({.sampleRate = rate,
                      .maxBlockSize = kBlock,
                      .numOutputChannels = 2,
                      .meterLoudness = false,
-                     .maxCleanupTracks = static_cast<int>(model.tracks.size())});
+                     .maxCleanupTracks = static_cast<int>(model.tracks.size()),
+                     .masterChain = master});
     engine->publishSnapshot(buildPlaybackSnapshot(model, media, rate, 1));
     engine->setStopAtEnd(false);
     engine->seek(0);
@@ -467,7 +469,7 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
     const Fft resonanceFft(SpectralDenoiser::kFftSize);
     const std::vector<float> resonanceWindow = SpectralDenoiser::window();
     const int attackFrameLength = std::max(1, static_cast<int>(std::lround(kAttackFrameMs * 0.001 * rate)));
-    auto mixEngine = makeEngine(model, media, rate);
+    auto mixEngine = makeEngine(model, media, rate, true);
     LoudnessMeter mixMeter;
     mixMeter.prepare(rate, 2, true);
     std::vector<float> mixLeft(kBlock), mixRight(kBlock);
@@ -747,6 +749,7 @@ Result<StemReport> analyzeStems(const ProjectModel& model, const MediaPool& pool
         }
 
     report.mix = mixMeter.reading();
+    report.master = model.master;
     report.advice = adviseStems(report);
     report.analysisSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     return report;
@@ -766,17 +769,24 @@ std::vector<StemAdvice> adviseStems(const StemReport& report)
     const double tp = report.mix.truePeakDbtp;
     if (tp > 0.0 || report.mixOvers > 0) {
         add(AdviceSeverity::Warning, "mix-clipping", std::nullopt, std::nullopt,
-            format("The mix peaks at %+.1f dBTP and clips. Lower the Master by at least %.1f dB to reach the %.0f dBTP ceiling.",
-                   tp, std::ceil((tp - kCeilingDbtp) * 10.0) / 10.0, kCeilingDbtp));
+            format("The mix peaks at %+.1f dBTP and clips. Switch on the master limiter (Master panel, Ctrl+M) to hold it at "
+                   "the %.0f dBTP ceiling, or lower the master fader by at least %.1f dB.",
+                   tp, kCeilingDbtp, std::ceil((tp - kCeilingDbtp) * 10.0) / 10.0));
     } else if (tp > kCeilingDbtp) {
         add(AdviceSeverity::Suggestion, "mix-ceiling", std::nullopt, std::nullopt,
-            format("The mix peaks at %+.1f dBTP, above the %.0f dBTP ceiling streaming services ask for. Lower the Master by %.1f dB.",
-                   tp, kCeilingDbtp, std::ceil((tp - kCeilingDbtp) * 10.0) / 10.0));
+            report.master.limiter
+                ? format("The mix peaks at %+.1f dBTP, above the %.0f dBTP ceiling streaming services ask for. Set the master "
+                         "limiter's ceiling to %.0f dBTP.",
+                         tp, kCeilingDbtp, kCeilingDbtp)
+                : format("The mix peaks at %+.1f dBTP, above the %.0f dBTP ceiling streaming services ask for. Switch on the "
+                         "master limiter (Master panel, Ctrl+M), or lower the master fader by %.1f dB.",
+                         tp, kCeilingDbtp, std::ceil((tp - kCeilingDbtp) * 10.0) / 10.0));
     }
     if (report.mix.integratedLufs > -70.0)
         add(AdviceSeverity::Info, "mix-loudness", std::nullopt, std::nullopt,
             format("The mix measures %.1f LUFS integrated with a loudness range of %.1f LU. Streaming services play songs at "
-                   "about -14 LUFS; club and techno masters are often between -9 and -6 LUFS.",
+                   "about -14 LUFS; club and techno masters are often between -9 and -6 LUFS. Match Loudness in the Master "
+                   "panel sets the master fader for a target.",
                    report.mix.integratedLufs, report.mix.loudnessRangeLu));
 
     // ---- each stem ------------------------------------------------------------

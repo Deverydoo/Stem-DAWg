@@ -67,6 +67,27 @@ void TruePeakDetector::reset() noexcept
     std::fill(position_.begin(), position_.end(), 0);
 }
 
+float TruePeakDetector::interpolatedPeak(int channel, float x) noexcept
+{
+    if (factor_ == 1 || channel < 0 || channel >= channels_)
+        return std::abs(x);
+    float peak = 0.0f;
+    float* ring = history_.data() + static_cast<std::size_t>(channel) * 2 * static_cast<std::size_t>(taps_);
+    int& pos = position_[static_cast<std::size_t>(channel)];
+    pos = pos == 0 ? taps_ - 1 : pos - 1;
+    ring[pos] = x;
+    ring[pos + taps_] = x;
+    const float* recent = ring + pos;
+    for (int p = 0; p < factor_; ++p) {
+        const float* h = phases_.data() + static_cast<std::size_t>(p * taps_);
+        float y = 0.0f;
+        for (int k = 0; k < taps_; ++k)
+            y += h[k] * recent[k];
+        peak = std::max(peak, std::abs(y));
+    }
+    return peak;
+}
+
 float TruePeakDetector::process(const float* const* channels, int numChannels, int numFrames) noexcept
 {
     float peak = 0.0f;

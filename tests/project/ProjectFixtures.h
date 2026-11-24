@@ -15,6 +15,7 @@ inline ProjectModel makeRichProject()
     model.sampleRate = 44100.0;
     model.tempo = {133.5, 7, 8};
     model.masterGainDb = -1.5;
+    model.master = {true, -0.5, 150.0, -10.0};
     model.playhead = 123456789;
 
     MediaRef drums;

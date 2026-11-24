@@ -97,6 +97,13 @@ std::unique_ptr<PlaybackSnapshot> buildPlaybackSnapshot(const ProjectModel& mode
     // master changes exactly like track changes (no clicks).
     const auto master = static_cast<float>(dbToGain(model.masterGainDb));
     snapshot->masterGain = 1.0f;
+    {
+        MasterSettings m = model.master;
+        m.clamp();
+        snapshot->master = {.limiter = m.limiter,
+                            .ceilingDbtp = static_cast<float>(m.ceilingDbtp),
+                            .releaseMs = static_cast<float>(m.releaseMs)};
+    }
 
     for (const Track& track : model.tracks) {
         TrackPlayback playback;

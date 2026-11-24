@@ -5,6 +5,7 @@
 
 #include "AboutDialog.h"
 #include "CleanupPanel.h"
+#include "MasterPanel.h"
 #include "DeviceDialog.h"
 #include "DiagnosticsPanel.h"
 #include "EngineBridge.h"
@@ -338,6 +339,13 @@ void MainWindow::buildUi()
     diagDock->setWidget(diagnostics_);
     addDockWidget(Qt::RightDockWidgetArea, diagDock);
     tabifyDockWidget(cleanupDock_, diagDock);
+
+    masterPanel_ = new MasterPanel(this);
+    masterDock_ = new QDockWidget(tr("Master"), this);
+    masterDock_->setObjectName(QStringLiteral("master"));
+    masterDock_->setWidget(masterPanel_);
+    addDockWidget(Qt::RightDockWidgetArea, masterDock_);
+    tabifyDockWidget(cleanupDock_, masterDock_);
     cleanupDock_->raise();
 
     stemPanel_ = new StemReportPanel(this);
@@ -427,6 +435,14 @@ void MainWindow::buildMenus()
     cleanup->addAction(bypassCleanup_);
     cleanup->addAction(listenRemoved_);
 
+    auto* mastering = menuBar()->addMenu(tr("&Master"));
+    mastering->addAction(tr("Master &Panel"), QKeySequence(Qt::CTRL | Qt::Key_M), this, [this] {
+        masterDock_->show();
+        masterDock_->raise();
+    })->setStatusTip(tr("The master bus: true-peak limiter and loudness target"));
+    mastering->addAction(tr("&Match Loudness"), this, [this] { project_->matchLoudness(project_->model().master.targetLufs); })
+        ->setStatusTip(tr("Set the master fader for the loudness target through the limiter"));
+
     auto* view = menuBar()->addMenu(tr("&View"));
     view->addAction(tr("Zoom to &Fit"), QKeySequence(Qt::CTRL | Qt::Key_0), waveform_, &WaveformView::zoomToFit);
     view->setToolTipsVisible(true);
@@ -487,6 +503,21 @@ void MainWindow::connectSignals()
         const daw::StemReport* report = project_->stemReport();
         if (report != nullptr && index >= 0 && static_cast<std::size_t>(index) < report->tracks.size())
             cleanupPanel_->selectTrack(QString::fromStdString(report->tracks[static_cast<std::size_t>(index)].track.str()));
+    });
+    connect(masterPanel_, &MasterPanel::settingsEdited, this,
+            [this](const daw::MasterSettings& settings) { project_->setMasterSettings(settings); });
+    connect(masterPanel_, &MasterPanel::matchRequested, this, [this](double target) {
+        masterPanel_->setMatching(true);
+        project_->matchLoudness(target);
+    });
+    connect(project_.get(), &ProjectController::loudnessMatched, this, [this](const daw::LoudnessMatch& match, double target) {
+        masterPanel_->setMatching(false);
+        masterPanel_->showMatch(match, target);
+    });
+    connect(project_.get(), &ProjectController::projectChanged, this, [this] { masterPanel_->setMatching(false); });
+    connect(project_.get(), &ProjectController::loudnessMatchFailed, this, [this](const QString& message) {
+        masterPanel_->setMatching(false);
+        masterPanel_->showMatchError(message);
     });
     connect(cleanupPanel_, &CleanupPanel::cleanupEdited, this, [this](const QString& id, const daw::TrackCleanup& cleanup) {
         project_->setTrackCleanup(daw::TrackId(id.toStdString()), cleanup);
@@ -668,6 +699,8 @@ void MainWindow::onTick()
         setClipIndicator(true);
     if (diagnostics_->isVisible())
         diagnostics_->updateEngine(engine_->engine().diagnostics(), engine_->devices().status(), peaks);
+    if (masterPanel_->isVisible())
+        masterPanel_->setLimiterReduction(engine_->engine().takeMasterReductionDb());
     if (cleanupPanel_->isVisible()) {
         const QString id = cleanupPanel_->currentTrackId();
         cleanupPanel_->setGainReduction(
@@ -736,6 +769,7 @@ void MainWindow::refreshMixer()
     if (masterFader_->gainDb() != model.masterGainDb && !masterFader_->isSliderDown())
         masterFader_->setGainDb(model.masterGainDb);
     masterLabel_->setText(VolumeFader::formatDb(model.masterGainDb));
+    masterPanel_->setSettings(model.master, model.masterGainDb);
     if (bypassCleanup_->isChecked() != project_->isCleanupBypassed()) {
         const QSignalBlocker block(bypassCleanup_);
         bypassCleanup_->setChecked(project_->isCleanupBypassed());

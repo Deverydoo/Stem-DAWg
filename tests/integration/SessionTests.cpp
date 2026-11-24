@@ -197,6 +197,9 @@ TEST_CASE("Snapshot builder passes each track's clean-up chain to the engine", "
     CHECK(p.stereoWidth == 1.5f);
     CHECK(p.stereoPhaseAlign);
     CHECK_FALSE(snapshot->tracks[1].cleanup.active());
+    CHECK_FALSE(snapshot->master.limiter);
+    model.master = {true, -0.3, 250.0, -9.0};
+    CHECK(buildPlaybackSnapshot(model, pool, 48000.0, 9)->master == MasterParams{true, -0.3f, 250.0f});
 
     // The transient shaper alone makes a chain.
     TrackCleanup shaperOnly;

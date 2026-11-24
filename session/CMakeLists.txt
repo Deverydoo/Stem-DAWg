@@ -7,6 +7,7 @@ daw_add_module(session
         src/MediaLoader.cpp
         src/ProjectOperations.cpp
         src/SnapshotBuilder.cpp
+        src/MasteringTools.cpp
         src/Renderer.cpp
         src/StemReport.cpp
         src/UndoStack.cpp

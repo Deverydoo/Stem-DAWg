@@ -16,6 +16,17 @@ const MediaRef* ProjectModel::findMedia(const MediaId& mediaId) const
     return it == media.end() ? nullptr : &*it;
 }
 
+void MasterSettings::clamp() noexcept
+{
+    const MasterSettings defaults;
+    const auto limit = [](double value, double lo, double hi, double fallback) {
+        return std::isfinite(value) ? std::clamp(value, lo, hi) : fallback;
+    };
+    ceilingDbtp = limit(ceilingDbtp, kMinCeilingDbtp, kMaxCeilingDbtp, defaults.ceilingDbtp);
+    releaseMs = limit(releaseMs, kMinReleaseMs, kMaxReleaseMs, defaults.releaseMs);
+    targetLufs = limit(targetLufs, kMinTargetLufs, kMaxTargetLufs, defaults.targetLufs);
+}
+
 void TrackCleanup::clamp() noexcept
 {
     const auto limit = [](double value, double lo, double hi, double fallback) {

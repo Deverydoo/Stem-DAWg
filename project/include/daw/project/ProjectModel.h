@@ -163,6 +163,26 @@ struct StereoSettings {
     friend bool operator==(const StereoSettings&, const StereoSettings&) = default;
 };
 
+/// The master bus after the summed tracks (milestone 5): a true-peak limiter,
+/// and the loudness the master fader is set for. Off by default.
+struct MasterSettings {
+    static constexpr double kMinCeilingDbtp = -12.0;
+    static constexpr double kMaxCeilingDbtp = 0.0;
+    static constexpr double kMinReleaseMs = 10.0;
+    static constexpr double kMaxReleaseMs = 1000.0;
+    static constexpr double kMinTargetLufs = -30.0;
+    static constexpr double kMaxTargetLufs = -5.0;
+
+    bool limiter = false;
+    double ceilingDbtp = -1.0;
+    double releaseMs = 100.0;
+    double targetLufs = -14.0; // what Match Loudness aims for
+
+    /// Limits every value to its range (non-finite values take the defaults).
+    void clamp() noexcept;
+    friend bool operator==(const MasterSettings&, const MasterSettings&) = default;
+};
+
 /// Non-destructive per-track clean-up, applied before the fader in this order:
 /// DC removal, high-pass, stereo imager (mono bass, width), hum removal,
 /// noise reduction, resonance suppression and phase alignment (one spectral
@@ -238,7 +258,8 @@ struct ProjectModel {
 
     double sampleRate = 48000.0;
     TempoMap tempo;
-    double masterGainDb = 0.0;
+    double masterGainDb = 0.0; // the master fader: before the master bus, so the drive into its limiter
+    MasterSettings master;
     std::int64_t playhead = 0; // project frames
 
     std::vector<MediaRef> media;

@@ -72,10 +72,23 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
                     .maxBlockSize = block,
                     .numOutputChannels = 2,
                     .meterLoudness = false,
-                    .maxCleanupTracks = static_cast<int>(model.tracks.size())});
+                    .maxCleanupTracks = static_cast<int>(model.tracks.size()),
+                    .masterChain = true});
     engine.publishSnapshot(std::move(snapshot));
     engine.seek(0);
     engine.play();
+
+    // The master bus delays the output: render its latency first and drop it,
+    // so the mix starts at frame 0 and its tail is not cut.
+    {
+        std::vector<float> scratchLeft(static_cast<std::size_t>(block)), scratchRight(static_cast<std::size_t>(block));
+        for (int skipped = 0, latency = engine.masterLatency(); skipped < latency;) {
+            const int n = std::min(block, latency - skipped);
+            float* outs[2] = {scratchLeft.data(), scratchRight.data()};
+            engine.process(outs, 2, n);
+            skipped += n;
+        }
+    }
 
     LoudnessMeter meter;
     meter.prepare(rate, 2);

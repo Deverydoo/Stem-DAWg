@@ -13,6 +13,7 @@
 #include <daw/project/ProjectModel.h>
 #include <daw/session/MediaPool.h>
 #include <daw/session/BleedTools.h>
+#include <daw/session/MasteringTools.h>
 #include <daw/session/NoiseTools.h>
 #include <daw/session/VoiceTools.h>
 #include <daw/session/Renderer.h>
@@ -90,6 +91,11 @@ public:
     /// `exclusive` un-solos every other track (plain click); false adds to the solo set (Ctrl+click).
     void setTrackSoloed(const daw::TrackId& track, bool soloed, bool exclusive = true);
     void setMasterGain(double gainDb);
+    // The master bus (limiter, loudness target).
+    void setMasterSettings(daw::MasterSettings settings);
+    /// Sets the master fader for `targetLufs` through the limiter (switched
+    /// on), in the background; loudnessMatched or loudnessMatchFailed follows.
+    void matchLoudness(double targetLufs);
 
     // Clean-up chains (live, non-destructive).
     void setTrackCleanup(const daw::TrackId& track, daw::TrackCleanup cleanup);
@@ -161,6 +167,8 @@ Q_SIGNALS:
     /// Bleed suppression took this much (dB, negative) of the louder parts of
     /// these tracks: they may mostly duplicate other stems.
     void bleedLossWarning(const QStringList& trackNames, double worstChangeDb);
+    void loudnessMatched(const daw::LoudnessMatch& match, double targetLufs);
+    void loudnessMatchFailed(const QString& message);
 
 private:
     void resetSession();

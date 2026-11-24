@@ -6,19 +6,22 @@
 // the advice rules.
 //
 //   stem-report <folder | file...> [--json] [--apply-fixes] [--denoise[=dB]]
-//               [--bleed[=light|medium|strong]] [--out=folder]
+//               [--bleed[=light|medium|strong]] [--master[=LUFS]] [--out=folder]
 //
 // --apply-fixes applies every clean-up fix the advice suggests; --denoise
 // learns each stem's noise profile, looks for hum, and switches on noise
 // reduction (default 12 dB) and hum removal where found; --bleed renders
 // bleed-suppressed copies of every stem (default medium), into
 // <out>/Media/Processed when --out is given (to listen to), otherwise into a
-// temporary folder removed afterwards. With any of them, the stems are
-// reported again, measured after the processing.
+// temporary folder removed afterwards. --master sets the master fader for a
+// loudness target (default -14 LUFS) through the master limiter at -1 dBTP.
+// With any of them, the stems are reported again, measured after the
+// processing.
 
 #include <daw/core/Files.h>
 #include <daw/media/AudioFileDecoder.h>
 #include <daw/session/BleedTools.h>
+#include <daw/session/MasteringTools.h>
 #include <daw/session/NoiseTools.h>
 #include <daw/session/ProjectOperations.h>
 #include <daw/session/StemReport.h>
@@ -117,6 +120,7 @@ int main(int argc, char** argv)
     bool applyFixes = false;
     std::optional<double> denoiseDb;
     const BleedStrength* bleed = nullptr;
+    std::optional<double> masterLufs;
     std::optional<fs::path> out;
     std::vector<fs::path> files;
     for (int i = 1; i < argc; ++i) {
@@ -147,6 +151,10 @@ int main(int argc, char** argv)
             }
             continue;
         }
+        if (arg == "--master" || arg.rfind("--master=", 0) == 0) {
+            masterLufs = arg.size() > 9 ? std::atof(arg.c_str() + 9) : -14.0;
+            continue;
+        }
         if (arg.rfind("--out=", 0) == 0) {
             out = utf8ToPath(arg.substr(6));
             continue;
@@ -162,7 +170,7 @@ int main(int argc, char** argv)
         }
     }
     if (files.empty()) {
-        std::fprintf(stderr, "usage: stem-report <folder | audio files...> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--out=folder]\n");
+        std::fprintf(stderr, "usage: stem-report <folder | audio files...> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--master[=LUFS]] [--out=folder]\n");
         return 2;
     }
     std::sort(files.begin(), files.end());
@@ -198,7 +206,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "analysis failed: %s\n", report.error().describe().c_str());
         return 1;
     }
-    if (applyFixes || denoiseDb || bleed) {
+    if (applyFixes || denoiseDb || bleed || masterLufs) {
         if (!json) {
             std::printf("Before clean-up:\n\n");
             print(*report);
@@ -260,6 +268,26 @@ int main(int argc, char** argv)
                 track.cleanup.denoise.profile = std::move(*profile);
                 ++changed;
             }
+        }
+        if (masterLufs) {
+            MasterSettings master = model.master;
+            master.limiter = true;
+            const auto match = matchLoudness(model, pool, *masterLufs, master);
+            if (!match) {
+                std::fprintf(stderr, "loudness match failed: %s\n", match.error().describe().c_str());
+                return 1;
+            }
+            if (!json)
+                std::printf("Master for %.1f LUFS: mix %.1f LUFS / %+.1f dBTP -> fader %+.1f dB -> %.1f LUFS, %+.1f dBTP, "
+                            "LRA %.1f LU, limiter down to %.1f dB (%d trials, %.1f s)%s\n",
+                            *masterLufs, match->mixLufs, match->mixTruePeakDbtp, match->masterGainDb, match->resultLufs,
+                            match->resultTruePeakDbtp, match->resultLoudnessRangeLu, match->maxReductionDb, match->trials,
+                            match->seconds,
+                            match->reached ? "" : match->limited ? "  (target needs more limiting than allowed)" : "  (target not reached)");
+            model.masterGainDb = match->masterGainDb;
+            model.master = master;
+            model.master.targetLufs = *masterLufs;
+            ++changed;
         }
         auto cleaned = analyzeStems(model, pool);
         if (!cleaned) {

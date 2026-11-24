@@ -516,6 +516,49 @@ void ProjectController::setMasterGain(double gainDb)
         Q_EMIT mixerChanged();
 }
 
+void ProjectController::setMasterSettings(daw::MasterSettings settings)
+{
+    settings.clamp();
+    if (applyEdit(tr("Master Bus"), {"master-bus"},
+                  [&settings](daw::ProjectModel& model) { return std::exchange(model.master, settings) != settings; }))
+        Q_EMIT mixerChanged();
+}
+
+void ProjectController::matchLoudness(double targetLufs)
+{
+    const daw::ProjectModel model = model_;
+    daw::MasterSettings master = model_.master;
+    master.limiter = true;
+    const auto token = cancel_->token();
+    Q_EMIT statusMessage(tr("Matching %1 LUFS...").arg(targetLufs, 0, 'f', 1));
+    runInBackground([this, model, targetLufs, master, token] { return daw::matchLoudness(model, pool_, targetLufs, master, {}, token); },
+                    [this, targetLufs, master](daw::Result<daw::LoudnessMatch>& match) {
+                        if (!match) {
+                            if (match.error().code != daw::ErrorCode::Cancelled) {
+                                const QString message = tr("Could not match the loudness: %1").arg(QString::fromStdString(match.error().message));
+                                Q_EMIT statusMessage(message);
+                                Q_EMIT loudnessMatchFailed(message);
+                            }
+                            return;
+                        }
+                        const double gain = std::clamp(match->masterGainDb, daw::kSilenceDb, 12.0);
+                        applyEdit(tr("Match Loudness"), {}, [&](daw::ProjectModel& m) {
+                            m.masterGainDb = gain;
+                            m.master = master;
+                            m.master.targetLufs = targetLufs;
+                            return true;
+                        });
+                        Q_EMIT mixerChanged();
+                        Q_EMIT loudnessMatched(*match, targetLufs);
+                        Q_EMIT statusMessage(match->reached
+                                                 ? tr("Master fader set to %1 dB: the master measures %2 LUFS.").arg(gain, 0, 'f', 1).arg(match->resultLufs, 0, 'f', 1)
+                                                 : tr("Master fader set to %1 dB: %2 LUFS, short of the %3 LUFS target.")
+                                                       .arg(gain, 0, 'f', 1)
+                                                       .arg(match->resultLufs, 0, 'f', 1)
+                                                       .arg(targetLufs, 0, 'f', 1));
+                    });
+}
+
 void ProjectController::setTrackCleanup(const daw::TrackId& id, daw::TrackCleanup cleanup)
 {
     cleanup.clamp();

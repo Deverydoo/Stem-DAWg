@@ -112,6 +112,9 @@ void AudioEngine::prepare(const EngineConfig& config)
     lastAdoptedVersion_ = 0; // re-adopt the current snapshot with the new slots
     loudness_.prepare(rate, config.meterLoudness ? std::clamp(config.numOutputChannels, 1, 2) : 0);
     publishLoudness();
+    master_.prepare(rate);
+    masterNextFrame_ = -1;
+    masterReduction_.store(0.0f, std::memory_order_relaxed);
 }
 
 void AudioEngine::beginProcessing()
@@ -413,6 +416,17 @@ void AudioEngine::process(float* const* outputs, int numChannels, int numFrames)
                 }
             }
         }
+        if (config_.masterChain && numChannels > 0 && outputs[0] != nullptr) {
+            // The limiter's delay holds the audio just before the playhead:
+            // after a jump it belongs somewhere else, so it is cleared.
+            const std::int64_t at = transport_.playhead();
+            if (at != masterNextFrame_)
+                master_.reset();
+            float* right = numChannels > 1 && outputs[1] != nullptr ? outputs[1] : outputs[0];
+            master_.process(outputs[0], right, numFrames);
+            masterNextFrame_ = at + numFrames;
+            storeMin(masterReduction_, master_.takeMinGainDb());
+        }
         applyFade(outputs, numChannels, numFrames);
         transport_.advance(numFrames);
         if (fadeLevel_ == 0.0f && fadeTarget_ == 0.0f)
@@ -461,6 +475,7 @@ void AudioEngine::process(float* const* outputs, int numChannels, int numFrames)
 
 void AudioEngine::adoptMix(const PlaybackSnapshot& snapshot) noexcept
 {
+    master_.setParams(snapshot.master);
     // Carry each track's current gain into the new snapshot so gain changes
     // ramp instead of jumping. While stopped there is nothing to smooth.
     const std::size_t previous = rampCount_;

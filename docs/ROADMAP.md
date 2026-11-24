@@ -65,7 +65,8 @@ Milestone 1, the engineering foundation, is done: the engine, projects, waveform
 
 ### M5: Mastering
 - Genre tonal-balance targets (industrial, EBM, techno first) compared against the mix, with suggested EQ moves.
-- Multiband compression, a true-peak limiter, and loudness targets (streaming −14 LUFS; club/techno masters typically louder) with −1 dBTP ceilings.
+- **True-peak limiter and loudness targets** ✅ **done:** a master bus after the summed tracks with a 4x-oversampled true-peak limiter (never more than 0.02 dB over its ceiling on stress signals), and Match Loudness, which sets the master fader for a target (streaming −14, Apple Music −16, CD/Bandcamp −10, club −8 LUFS) through the limiter without asking it for more than 12 dB. See [M5-Mastering.md](milestone-5/M5-Mastering.md).
+- Multiband compression, for masters louder than a peak limiter alone can make them.
 - Reference-track matching (load a commercial track, compare spectrum and loudness).
 - Export presets per destination (streaming, Bandcamp, club, CD).
 

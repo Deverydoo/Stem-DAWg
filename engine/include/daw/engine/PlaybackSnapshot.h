@@ -16,6 +16,7 @@
 
 #include <daw/core/AudioAsset.h>
 #include <daw/dsp/CleanupChain.h>
+#include <daw/dsp/MasterChain.h>
 
 #include <cstdint>
 #include <vector>
@@ -52,6 +53,7 @@ struct PlaybackSnapshot {
     double sampleRate = 0.0;     // must equal the engine rate or the engine renders silence
     std::vector<TrackPlayback> tracks;
     float masterGain = 1.0f;
+    MasterParams master;         // the master bus after the summed tracks (EngineConfig::masterChain)
     std::int64_t endFrame = 0;   // end of the last clip (engine frames)
     std::vector<AudioAssetPtr> keepAlive;
     // Noise profiles at the engine rate, pointed to by TrackPlayback::cleanup.

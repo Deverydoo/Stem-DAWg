@@ -93,6 +93,25 @@ json cleanupToJson(const TrackCleanup& c)
               {"phaseAlign", c.stereo.phaseAlign}}}};
 }
 
+// Missing or malformed values fall back to the defaults and numbers are clamped.
+static MasterSettings masterFromJson(const json& j)
+{
+    MasterSettings m;
+    if (!j.is_object())
+        return m;
+    if (const auto it = j.find("limiter"); it != j.end() && it->is_boolean())
+        m.limiter = it->get<bool>();
+    const auto number = [&](const char* key, double fallback) {
+        const auto it = j.find(key);
+        return it != j.end() && it->is_number() && std::isfinite(it->get<double>()) ? it->get<double>() : fallback;
+    };
+    m.ceilingDbtp = number("ceilingDbtp", m.ceilingDbtp);
+    m.releaseMs = number("releaseMs", m.releaseMs);
+    m.targetLufs = number("targetLufs", m.targetLufs);
+    m.clamp();
+    return m;
+}
+
 // Missing or malformed values fall back to the defaults; numbers are clamped
 // to their ranges, so a hand-edited file can never configure an unstable filter.
 TrackCleanup cleanupFromJson(const json& j)
@@ -178,6 +197,11 @@ json projectToJson(const ProjectModel& model)
                        {"tempo", {{"bpm", model.tempo.bpm}, {"numerator", model.tempo.numerator}, {"denominator", model.tempo.denominator}}}};
     doc["transport"] = {{"playheadFrames", model.playhead}};
     doc["mixer"] = {{"masterGainDb", model.masterGainDb}};
+    if (!(model.master == MasterSettings{}))
+        doc["mixer"]["master"] = {{"limiter", model.master.limiter},
+                                  {"ceilingDbtp", model.master.ceilingDbtp},
+                                  {"releaseMs", model.master.releaseMs},
+                                  {"targetLufs", model.master.targetLufs}};
     if (!model.profileId.empty() || !model.release.empty())
         doc["release"] = {{"profileId", model.profileId}, {"fields", metadataToJson(model.release)}};
 
@@ -269,6 +293,7 @@ Result<ProjectModel> projectFromJson(json doc, const MigrationRegistry& migratio
 
         model.playhead = doc.value("transport", json::object()).value("playheadFrames", std::int64_t{0});
         model.masterGainDb = doc.value("mixer", json::object()).value("masterGainDb", 0.0);
+        model.master = masterFromJson(doc.value("mixer", json::object()).value("master", json::object()));
         const json release = doc.value("release", json::object());
         model.profileId = release.value("profileId", std::string());
         model.release = metadataFromJson(release.value("fields", json::object()));

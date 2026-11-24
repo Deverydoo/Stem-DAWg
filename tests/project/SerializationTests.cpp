@@ -87,7 +87,29 @@ TEST_CASE("Optional fields fall back to defaults", "[project][serialize]")
     REQUIRE(parsed.ok());
     REQUIRE(parsed->tempo.bpm == 120.0);
     REQUIRE(parsed->masterGainDb == 0.0);
+    REQUIRE(parsed->master == MasterSettings{});
     REQUIRE(parsed->playhead == 0);
+}
+
+TEST_CASE("The master bus is written only when set, and clamped when read", "[project][serialize][master]")
+{
+    CHECK_FALSE(projectToJson(makeEmptyProject("plain"))["mixer"].contains("master"));
+    auto doc = projectToJson(makeRichProject());
+    CHECK(doc["mixer"]["master"]["limiter"] == true);
+    CHECK(doc["mixer"]["master"]["ceilingDbtp"] == -0.5);
+    CHECK(doc["mixer"]["master"]["releaseMs"] == 150.0);
+    CHECK(doc["mixer"]["master"]["targetLufs"] == -10.0);
+    auto parsed = projectFromJson(doc);
+    REQUIRE(parsed.ok());
+    CHECK(parsed->master == makeRichProject().master);
+
+    doc["mixer"]["master"] = {{"limiter", "yes"}, {"ceilingDbtp", 6.0}, {"releaseMs", 1.0}, {"targetLufs", "loud"}};
+    parsed = projectFromJson(doc);
+    REQUIRE(parsed.ok());
+    CHECK_FALSE(parsed->master.limiter);
+    CHECK(parsed->master.ceilingDbtp == MasterSettings::kMaxCeilingDbtp);
+    CHECK(parsed->master.releaseMs == MasterSettings::kMinReleaseMs);
+    CHECK(parsed->master.targetLufs == MasterSettings{}.targetLufs);
 }
 
 TEST_CASE("Track pan and solo are optional and default to centre and off", "[project][serialize]")

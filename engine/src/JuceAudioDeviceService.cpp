@@ -50,6 +50,7 @@ struct AudioDeviceService::Impl final : juce::AudioIODeviceCallback {
         config.maxBlockSize = device->getCurrentBufferSizeSamples();
         config.numOutputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
         config.declick = true; // no clicks when the listener stops, seeks or starts
+        config.masterChain = true; // the listener hears the master bus (limiter)
         engine.prepare(config);
         engine.beginProcessing();
     }

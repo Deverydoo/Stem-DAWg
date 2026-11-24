@@ -30,6 +30,7 @@ class QLabel;
 class QPlainTextEdit;
 class QScrollBar;
 class StemReportPanel;
+class MasterPanel;
 class TrackPanel;
 class WaveformView;
 
@@ -98,6 +99,8 @@ private:
     DiagnosticsPanel* diagnostics_ = nullptr;
     QPlainTextEdit* analysisView_ = nullptr;
     StemReportPanel* stemPanel_ = nullptr;
+    MasterPanel* masterPanel_ = nullptr;
+    QDockWidget* masterDock_ = nullptr;
     CleanupPanel* cleanupPanel_ = nullptr;
     QDockWidget* cleanupDock_ = nullptr;
     QAction* bypassCleanup_ = nullptr;

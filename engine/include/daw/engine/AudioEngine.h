@@ -27,6 +27,7 @@
 #include <daw/core/SpscQueue.h>
 #include <daw/dsp/CleanupChain.h>
 #include <daw/dsp/LoudnessMeter.h>
+#include <daw/dsp/MasterChain.h>
 #include <daw/engine/PlaybackSnapshot.h>
 #include <daw/engine/Transport.h>
 
@@ -47,6 +48,11 @@ struct EngineConfig {
     // Tracks that can run a clean-up chain at once (each chain preallocates
     // ~140 KB of FFT and delay buffers). Further tracks play dry. At most 256.
     int maxCleanupTracks = 128;
+    // Run the master bus (PlaybackSnapshot::master) on the summed mix. Its
+    // limiter delays the output by masterLatency() frames, on or off. The
+    // live device and full mixdowns turn it on; renders of single tracks
+    // (analysis, noise learning) leave it off and stay undelayed.
+    bool masterChain = false;
 };
 
 struct MeterPeaks {
@@ -110,6 +116,10 @@ public:
     /// Deepest expander gain reduction (dB, <= 0) of the track with this
     /// snapshot key since the last call; 0 when it has no running chain.
     float takeCleanupReductionDb(std::uint64_t trackKey) noexcept;
+    /// Lowest master limiter gain since the last call, in dB (<= 0). Any thread.
+    float takeMasterReductionDb() noexcept { return masterReduction_.exchange(0.0f, std::memory_order_relaxed); }
+    /// Frames the master bus delays the output by (0 without EngineConfig::masterChain).
+    int masterLatency() const noexcept { return config_.masterChain ? master_.latency() : 0; }
     EngineDiagnostics diagnostics() const noexcept;
 
     // ---- real-time ---------------------------------------------------------
@@ -212,6 +222,9 @@ private:
     std::vector<float> cleanScratch_;                 // 2 x cleanScratchFrames_, allocated in prepare()
     int cleanScratchFrames_ = 0;
     LoudnessMeter loudness_; // prepared in prepare(), then audio-thread owned while processing
+    MasterChain master_;     // likewise
+    std::int64_t masterNextFrame_ = -1; // continuity check: a jump clears the limiter's delay
+    std::atomic<float> masterReduction_{0.0f};
 
     // Declick (audio-thread private while processing).
     int fadeFrames_ = 240;

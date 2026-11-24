@@ -6,6 +6,7 @@
 #include <daw/session/BleedTools.h>
 
 #include "HelpText.h"
+#include "ReductionMeter.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -29,7 +30,6 @@
 namespace {
 
 constexpr int kFrequencySteps = 1000;
-constexpr double kMeterRangeDb = 30.0;
 constexpr double kExpanderMarginDb = 10.0; // same margin the stem report suggests
 
 int frequencyToPosition(double hz)
@@ -54,38 +54,6 @@ QIcon swatch(const QColor& colour)
 }
 
 } // namespace
-
-/// Horizontal gain-reduction bar: grows to the left from 0 dB.
-class ReductionMeter final : public QWidget {
-public:
-    explicit ReductionMeter(QWidget* parent) : QWidget(parent) { setFixedHeight(16); }
-
-    void setReduction(float db)
-    {
-        // Show the deepest of the new reading and the decaying old one.
-        shown_ = std::min(db, std::min(0.0f, shown_ + 1.5f));
-        update();
-    }
-
-protected:
-    void paintEvent(QPaintEvent*) override
-    {
-        QPainter p(this);
-        const QRect r = rect().adjusted(0, 0, -1, -1);
-        p.fillRect(r, QColor(0x22, 0x24, 0x28));
-        const double fraction = std::clamp(-static_cast<double>(shown_) / kMeterRangeDb, 0.0, 1.0);
-        const int w = static_cast<int>(std::lround(fraction * r.width()));
-        p.fillRect(QRect(r.right() - w, r.top(), w, r.height()), QColor(0x4a, 0x90, 0xd9));
-        p.setPen(QColor(0x3a, 0x3d, 0x44));
-        p.drawRect(r);
-        p.setPen(QColor(0xc8, 0xc8, 0xc8));
-        p.drawText(r.adjusted(4, 0, -4, 0), Qt::AlignLeft | Qt::AlignVCenter,
-                   shown_ < -0.05f ? QStringLiteral("%1 dB").arg(static_cast<double>(shown_), 0, 'f', 1) : QStringLiteral("0 dB"));
-    }
-
-private:
-    float shown_ = 0.0f;
-};
 
 CleanupPanel::CleanupPanel(QWidget* parent) : QWidget(parent)
 {

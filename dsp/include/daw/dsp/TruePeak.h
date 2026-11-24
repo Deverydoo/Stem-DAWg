@@ -25,6 +25,14 @@ public:
     /// all channels. Channels beyond the prepared count are ignored.
     float process(const float* const* channels, int numChannels, int numFrames) noexcept;
 
+    /// Feeds one sample of one channel and returns the largest absolute value
+    /// of the oversampled points between the original samples that it
+    /// completes. Those points lie about delay() samples in the past (the
+    /// interpolator's group delay). Without oversampling it returns |x|.
+    float interpolatedPeak(int channel, float x) noexcept;
+    /// Group delay of the interpolator in samples (0 without oversampling).
+    int delay() const noexcept { return factor_ == 1 ? 0 : taps_ / 2; }
+
     int oversampling() const noexcept { return factor_; }
 
 private:

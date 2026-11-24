@@ -148,7 +148,8 @@ struct StemAdvice {
 struct StemReport {
     double sampleRate = 0.0;
     std::int64_t frames = 0;
-    LoudnessReading mix;              // the mix as heard (mute, solo and master applied)
+    LoudnessReading mix;              // the mix as heard (mute, solo, master fader and master bus applied)
+    MasterSettings master;            // the master bus it was measured with
     std::int64_t mixOvers = 0;        // mix samples beyond full scale
     std::vector<TrackStemReport> tracks;
     std::vector<StemPairReport> pairs;

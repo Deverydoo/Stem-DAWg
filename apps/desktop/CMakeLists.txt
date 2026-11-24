@@ -26,6 +26,8 @@ qt_add_executable(stem_dawg WIN32
     LoudnessDisplay.h LoudnessDisplay.cpp
     StemReportPanel.h StemReportPanel.cpp
     CleanupPanel.h CleanupPanel.cpp
+    MasterPanel.h MasterPanel.cpp
+    ReductionMeter.h
     SoundFontDialog.h SoundFontDialog.cpp
     VoiceModelDialog.h VoiceModelDialog.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/stem-dawg.rc")
