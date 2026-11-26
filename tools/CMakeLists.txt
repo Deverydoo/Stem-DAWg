@@ -10,3 +10,7 @@ add_executable(voice_denoise voice-denoise/main.cpp)
 set_target_properties(voice_denoise PROPERTIES OUTPUT_NAME "voice-denoise" FOLDER "tools")
 target_link_libraries(voice_denoise PRIVATE daw::ai daw::media daw::compile_options)
 daw_copy_runtime_dlls(voice_denoise)
+
+add_executable(drums_to_midi drums-to-midi/main.cpp)
+set_target_properties(drums_to_midi PROPERTIES OUTPUT_NAME "drums-to-midi" FOLDER "tools")
+target_link_libraries(drums_to_midi PRIVATE daw::session daw::compile_options)

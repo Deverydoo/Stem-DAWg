@@ -8,7 +8,7 @@ Stem DAWg is licensed under the **GNU Affero General Public License v3.0 or late
 | [Qt](https://www.qt.io) | 6.5+ (developed with 6.12) | LGPL-3.0 | Desktop user interface | Linked dynamically. The Qt DLLs ship unmodified beside the executable and can be replaced by the user. Qt source: https://download.qt.io |
 | [ONNX Runtime](https://onnxruntime.ai) | 1.22.0 | MIT | AI model inference | Downloaded from the official NuGet package at build time. |
 | [nlohmann/json](https://github.com/nlohmann/json) | 3.11.3 | MIT | Project, profile and analysis files | |
-| [TinySoundFont and TinyMidiLoader](https://github.com/schellingb/TinySoundFont) | commit a3621a1 | MIT | MIDI file loading and SoundFont synthesis | Single-header libraries, compiled into the media module. |
+| [TinySoundFont](https://github.com/schellingb/TinySoundFont) | commit a3621a1 | MIT | SoundFont synthesis | Single-header library, compiled into the media module. |
 | [XZ Embedded](https://github.com/tukaani-project/xz-embedded) | 2024-12-30 | 0BSD | Unpacking the SoundFont download (.xz) | Decoder only. |
 | [Catch2](https://github.com/catchorg/Catch2) | 3.7.1 | BSL-1.0 | Unit tests | Test-only, not shipped. |
 | Microsoft Visual C++ runtime | 14.44 | Microsoft Visual Studio redistributable ("Distributable Code") | C++ standard library at run time | Binary releases only: the unmodified redistributable DLLs (`vcruntime140*.dll`, `msvcp140*.dll`, `concrt140.dll`) ship beside the executable so no separate installer is needed. They are system libraries in the sense of AGPL section 1. |

@@ -10,6 +10,7 @@ daw_add_module(session
         src/MasteringTools.cpp
         src/Renderer.cpp
         src/Destinations.cpp
+        src/DrumMidi.cpp
         src/StemReport.cpp
         src/UndoStack.cpp
         src/NoiseTools.cpp

@@ -19,5 +19,7 @@ daw_add_module(dsp
         src/Stereo.cpp
         src/DeepFilterDsp.cpp
         src/BleedSuppressor.cpp
+        src/DrumTranscriber.cpp
+        src/BeatTracker.cpp
     PUBLIC_DEPS
         daw::core)

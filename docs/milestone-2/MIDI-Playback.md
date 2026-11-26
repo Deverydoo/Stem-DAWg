@@ -5,7 +5,7 @@ Suno's advanced stem split exports a MIDI file next to each stem. Stem DAWg impo
 ## How it works
 
 - **A MIDI track is audio.** On load, the file is rendered offline through a SoundFont into an ordinary stereo `AudioAsset` at the project's sample rate (`media/Midi`). Everything downstream treats it like a stem: mixer, mute and solo, loudness metering, the stem report, export.
-- **Parsing and synthesis:** TinyMidiLoader and TinySoundFont (MIT, single-header). The loader applies the file's tempo map; Suno's files carry hundreds of tempo events so the notes follow the song. Event times are resolved to 1 ms.
+- **Parsing and synthesis:** our own Standard MIDI File parser (`media/MidiFile`) and TinySoundFont (MIT, single-header). The parser applies the file's tempo map in double precision; Suno's files carry a tempo event on every beat so the notes follow the song. Until 0.4 the parser was TinyMidiLoader, which rounds to the millisecond at every tempo change: over a 6-minute Suno export (764 tempo events) its notes drifted 0.34 s early by the end.
 - **Import:** `importAudioFile` probes the MIDI file (length, average tempo, notes, drum use) and records it as stereo media at the project rate. The length is the last event plus a 2 s release tail. Loading renders it at that rate, so clip lengths stay exact.
 - **Level:** renders start at -12 dB (`kMidiRenderGainDb`). General MIDI at full velocity is far louder than typical stems, and drum kits peak above full scale at 0 dB.
 - **Tempo:** the first MIDI file imported into a project at the default tempo sets the project tempo to the file's average tempo. The bar.beat ruler then follows the music.

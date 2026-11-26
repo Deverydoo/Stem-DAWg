@@ -4,11 +4,11 @@
 #include <daw/media/Midi.h>
 
 #include <daw/core/Files.h>
+#include <daw/media/MidiFile.h>
 
 #ifdef _MSC_VER
 #pragma warning(push, 0)
 #endif
-#include <tml.h>
 #include <tsf.h>
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -27,24 +27,17 @@ namespace {
 
 constexpr int kDrumChannel = 9; // MIDI channel 10
 
-struct MidiMessages {
-    tml_message* first = nullptr;
-    ~MidiMessages() { tml_free(first); }
-};
-
-Result<std::unique_ptr<MidiMessages>> loadMessages(const std::filesystem::path& path)
+Result<ParsedMidi> loadMidi(const std::filesystem::path& path)
 {
-    // Read the bytes ourselves: the loader's own file API cannot open Unicode paths on Windows.
     auto bytes = readFileBytes(path);
     if (!bytes)
         return bytes.error();
     if (bytes->size() > static_cast<std::size_t>(64) * 1024 * 1024)
         return makeError(ErrorCode::LimitExceeded, "MIDI file is too large: " + pathToUtf8(path));
-    auto messages = std::make_unique<MidiMessages>();
-    messages->first = tml_load_memory(bytes->data(), static_cast<int>(bytes->size()));
-    if (messages->first == nullptr)
-        return makeError(ErrorCode::ParseError, "not a valid MIDI file: " + pathToUtf8(path));
-    return messages;
+    auto parsed = parseMidiFile(*bytes);
+    if (!parsed)
+        return makeError(parsed.error().code, parsed.error().message + ": " + pathToUtf8(path));
+    return parsed;
 }
 
 std::mutex& cacheMutex()
@@ -101,33 +94,22 @@ bool isMidiFile(const std::filesystem::path& path)
 
 Result<MidiFileInfo> probeMidiFile(const std::filesystem::path& path)
 {
-    auto messages = loadMessages(path);
-    if (!messages)
-        return messages.error();
+    auto midi = loadMidi(path);
+    if (!midi)
+        return midi.error();
 
     MidiFileInfo info;
     unsigned int channels = 0;
-    double quarters = 0.0;
-    double tempoMicros = 500000.0; // 120 BPM until the first tempo event
-    unsigned int lastTime = 0, tempoTime = 0;
-    for (tml_message* m = (*messages)->first; m != nullptr; m = m->next) {
-        lastTime = std::max(lastTime, m->time);
-        if (m->type == TML_SET_TEMPO) {
-            quarters += (m->time - tempoTime) * 1000.0 / tempoMicros;
-            tempoTime = m->time;
-            const int value = tml_get_tempo_value(m);
-            if (value > 0)
-                tempoMicros = value;
-        } else if (m->type == TML_NOTE_ON && m->velocity > 0) {
+    for (const MidiEvent& e : midi->events)
+        if ((e.status & 0xF0) == 0x90 && e.data2 > 0) {
+            const int channel = e.status & 0x0F;
             ++info.noteCount;
-            channels |= 1u << (m->channel & 15);
-            info.usesDrums = info.usesDrums || m->channel == kDrumChannel;
+            channels |= 1u << channel;
+            info.usesDrums = info.usesDrums || channel == kDrumChannel;
         }
-    }
-    quarters += (lastTime - tempoTime) * 1000.0 / tempoMicros;
-    info.durationSeconds = lastTime / 1000.0;
-    if (lastTime > 0)
-        info.averageBpm = quarters / (info.durationSeconds / 60.0);
+    info.durationSeconds = midi->lastEventSeconds;
+    if (info.durationSeconds > 0.0)
+        info.averageBpm = midi->quarterNotes / (info.durationSeconds / 60.0);
     for (unsigned int c = channels; c != 0; c &= c - 1)
         ++info.channelCount;
     if (info.noteCount == 0)
@@ -169,9 +151,9 @@ Result<AudioAssetPtr> renderMidiFile(const std::filesystem::path& path, const So
     auto info = probeMidiFile(path);
     if (!info)
         return info.error();
-    auto messages = loadMessages(path);
-    if (!messages)
-        return messages.error();
+    auto midi = loadMidi(path);
+    if (!midi)
+        return midi.error();
 
     tsf* synth = soundFont.impl->copy();
     if (synth == nullptr)
@@ -214,29 +196,28 @@ Result<AudioAssetPtr> renderMidiFile(const std::filesystem::path& path, const So
         return true;
     };
 
-    for (tml_message* m = (*messages)->first; m != nullptr; m = m->next) {
-        if (!renderTo(static_cast<std::int64_t>(std::llround(m->time * rate / 1000.0))))
+    for (const MidiEvent& m : midi->events) {
+        if (!renderTo(static_cast<std::int64_t>(std::llround(m.seconds * rate))))
             return makeError(ErrorCode::Cancelled, "MIDI render cancelled");
-        const int channel = m->channel & 15;
-        switch (m->type) {
-        case TML_PROGRAM_CHANGE:
-            tsf_channel_set_presetnumber(synth, channel, static_cast<unsigned char>(m->program), channel == kDrumChannel ? 1 : 0);
+        const int channel = m.status & 0x0F;
+        switch (m.status & 0xF0) {
+        case 0xC0: // program change
+            tsf_channel_set_presetnumber(synth, channel, m.data1, channel == kDrumChannel ? 1 : 0);
             break;
-        case TML_NOTE_ON:
-            if (m->velocity > 0)
-                tsf_channel_note_on(synth, channel, static_cast<unsigned char>(m->key), static_cast<unsigned char>(m->velocity) / 127.0f);
+        case 0x90:
+            if (m.data2 > 0)
+                tsf_channel_note_on(synth, channel, m.data1, m.data2 / 127.0f);
             else
-                tsf_channel_note_off(synth, channel, static_cast<unsigned char>(m->key));
+                tsf_channel_note_off(synth, channel, m.data1);
             break;
-        case TML_NOTE_OFF:
-            tsf_channel_note_off(synth, channel, static_cast<unsigned char>(m->key));
+        case 0x80:
+            tsf_channel_note_off(synth, channel, m.data1);
             break;
-        case TML_PITCH_BEND:
-            tsf_channel_set_pitchwheel(synth, channel, m->pitch_bend);
+        case 0xE0: // pitch bend, 14 bits
+            tsf_channel_set_pitchwheel(synth, channel, m.data1 | (m.data2 << 7));
             break;
-        case TML_CONTROL_CHANGE:
-            tsf_channel_midi_control(synth, channel, static_cast<unsigned char>(m->control),
-                                     static_cast<unsigned char>(m->control_value));
+        case 0xB0:
+            tsf_channel_midi_control(synth, channel, m.data1, m.data2);
             break;
         default:
             break;

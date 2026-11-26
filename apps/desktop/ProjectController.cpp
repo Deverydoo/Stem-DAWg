@@ -24,6 +24,7 @@
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
+#include <QStandardPaths>
 
 #include <algorithm>
 #include <cmath>
@@ -1184,6 +1185,69 @@ void ProjectController::exportForDestinations(daw::ExportRequest request, std::v
                 message += QStringLiteral("\n\n") + tr("Artwork was not embedded: %1").arg(artworkWarning);
             }
             Q_EMIT exportFinished(anyWritten, warning, message, firstFile);
+        });
+}
+
+void ProjectController::drumsToMidi(const daw::TrackId& trackId, int grid)
+{
+    const daw::Track* track = model_.findTrack(trackId);
+    if (track == nullptr)
+        return;
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    const QString trackName = QString::fromStdString(track->name);
+    // Where the file goes: the project's Exports folder, or for an untitled
+    // project (which lives in the app's data folder) Documents/Stem DAWg/MIDI.
+    QString folder = untitled_ ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/Stem DAWg/MIDI")
+                               : toQString(root_ / "Exports");
+    QDir().mkpath(folder);
+    QString base = trackName;
+    for (QChar& c : base)
+        if (QStringLiteral("<>:\"/\\|?*").contains(c) || c.unicode() < 32)
+            c = QLatin1Char('_');
+    const QString path = QDir(folder).filePath(base.trimmed() + QStringLiteral(" (drums).mid"));
+    Q_EMIT statusMessage(tr("Transcribing %1 to MIDI...").arg(trackName));
+    runInBackground(
+        [this, model, trackId, grid, token, path]() -> daw::Result<daw::DrumMidiResult> {
+            daw::DrumMidiOptions options;
+            options.grid = grid;
+            auto result = daw::trackDrumsToMidi(model, pool_, trackId, options, token);
+            if (!result)
+                return result;
+            if (auto status = daw::writeMidiFile(toPath(path), result->song); !status)
+                return status.error();
+            return result;
+        },
+        [this, path, trackName, grid](daw::Result<daw::DrumMidiResult>& result) {
+            if (!result) {
+                if (result.error().code != daw::ErrorCode::Cancelled)
+                    Q_EMIT drumsToMidiFinished(false, tr("Could not transcribe %1: %2").arg(trackName, QString::fromStdString(result.error().message)), {});
+                return;
+            }
+            int counts[daw::kDrumKindCount] = {};
+            for (const daw::MidiNoteEvent& n : result->song.tracks.front().notes)
+                for (int k = 0; k < daw::kDrumKindCount; ++k)
+                    if (n.key == daw::generalMidiDrumKey(static_cast<daw::DrumKind>(k)))
+                        ++counts[k];
+            QString message = tr("%1 drum notes from %2, on %3 beats (%4 BPM, %5 bars), %6:")
+                                  .arg(result->notes)
+                                  .arg(trackName)
+                                  .arg(result->beats.beats.size())
+                                  .arg(result->beats.bpm, 0, 'f', 1)
+                                  .arg(result->beats.downbeats.size())
+                                  .arg(grid > 0 ? tr("quantised to 1/%1 notes").arg(grid) : tr("as played"));
+            message += QStringLiteral("\n") + tr("%1 kick, %2 snare, %3 closed hi-hat, %4 open hi-hat, %5 crash.")
+                                                  .arg(counts[0]).arg(counts[1]).arg(counts[2]).arg(counts[3]).arg(counts[4]);
+            message += QStringLiteral("\n\n") + tr("Saved as %1. The file changes tempo on every beat, so it stays on the song; "
+                                                   "a DAW's bar lines fall on its bars.").arg(QDir::toNativeSeparators(path));
+            const bool canPlay = !soundFont_.empty() && std::filesystem::exists(soundFont_);
+            message += QStringLiteral("\n\n") + (canPlay ? tr("Added as a MIDI track, so you can hear it against the stem.")
+                                                         : tr("Choose a SoundFont (Settings > SoundFont for MIDI) to hear it as a track."));
+            daw::logging::info("midi", "drums to midi", {{"track", trackName.toStdString()}, {"notes", result->notes},
+                                                         {"bpm", result->beats.bpm}, {"file", path.toStdString()}});
+            if (canPlay)
+                importAudio({path});
+            Q_EMIT drumsToMidiFinished(true, message, path);
         });
 }
 

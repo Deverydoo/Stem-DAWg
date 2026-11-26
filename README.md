@@ -17,7 +17,7 @@
 
 **Stem DAWg** is a music cleaner and mastering tool. It is not another general-purpose DAW. You load the stems from Suno (or any stem export) or your own recordings, and it helps you remove what ruins them: separation bleed, noise beds, fan hiss, harsh and phasey high ends, stems that sum into clipping. Then you balance and master the result.
 
-> **Status: early development (Milestones 1–5 done).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), suppresses bleed between stems, sharpens soft AI drums, tames harsh resonances and generator whine, repairs the stereo image, masters to a loudness target through a true-peak limiter and a soft clipper, compares the tonal balance with reference tracks you choose, and exports the finished mix, mastered for streaming, Bandcamp, club or CD. Audio to MIDI (M6) is next; see the [roadmap](docs/ROADMAP.md).
+> **Status: early development (Milestones 1–5 done).** It plays, mixes, analyses, cleans up, removes noise and hum (including an AI voice denoiser for speech), suppresses bleed between stems, sharpens soft AI drums, tames harsh resonances and generator whine, repairs the stereo image, masters to a loudness target through a true-peak limiter and a soft clipper, compares the tonal balance with reference tracks you choose, exports the finished mix, mastered for streaming, Bandcamp, club or CD, and turns a drum stem into MIDI. The rest of audio to MIDI (M6: bass, synths, keys) is next; see the [roadmap](docs/ROADMAP.md).
 
 ## What works today
 
@@ -36,6 +36,7 @@
 - **Master bus and loudness targets:** EQ, a three-band compressor, a 4x-oversampled soft clipper and a true-peak limiter after the summed tracks keep the master under its ceiling (−1 dBTP by default), inter-sample peaks included. **Match Loudness** sets the master fader so the master reaches a target (streaming −14, Apple Music −16, CD/Bandcamp −10, club −8 LUFS) through the limiter, switches on the soft clipper when the limiter alone cannot get there (it rounds off the loudest peaks, which keeps more of the song's dynamics), and says plainly when a target would take more than the mix can stand.
 - **Tonal balance against your references:** point it at a folder of releases you want to sound like; it measures them, compares the mix per third of an octave, and suggests (and applies) master EQ moves. No genre curves are invented: the target is your references.
 - **Export Mix:** renders the whole song at the project's sample rate to WAV (24-bit, 16-bit dithered, 32-bit float), master bus included, with clipping detection. Or **mastered for a destination**: streaming (−14 LUFS), Bandcamp (−10), club (−8) or CD (16-bit 44.1 kHz), or all four at once, one file each, each matched to its loudness and ceiling at its own sample rate without touching your project.
+- **Drums to MIDI:** right-click a drum track (or Analysis → Drums to MIDI) for a General MIDI file of its kick, snare, hi-hats and crash, on the song's beats and quantised, with a tempo change on every beat so it stays on the song even as an AI song's tempo drifts. It is saved and added as a MIDI track to hear against the stem; rebuild the beat with your own drum samples.
 - **Artist profiles:** enter your artist details once (artist, label, copyright, genre, website, cover art) and every export gets RIFF INFO and ID3v2.3 tags plus embedded artwork. Switch between artists in the toolbar.
 - **AI built in:** ONNX Runtime inference and background analyzers for levels, transients, spectrum and an inference probe. These are the foundation for AI-assisted cleaning and tuning.
 - **Hover help** on every control.
@@ -93,7 +94,7 @@ A git-ignored `CMakeUserPresets.json` can hard-code your Qt path (for example `l
 - **Stem Report** (bottom panel) runs on its own after import. Run it again with **Analyze** or Ctrl+R after changing faders. Click an advice item to find its stem.
 - **Loudness** (transport bar): M, S and I are momentary, short-term and integrated LUFS; TP is the true peak. Play the song from the start for its integrated loudness; click the readout to restart the measurement.
 - **Analysis → Detailed File Analysis** (Ctrl+Shift+A) measures each file in detail (Analysis Log tab); transients show as yellow markers.
-- **Command line:** `stem-report <folder of stems> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--out=folder]` prints the same stem report without the app; `--apply-fixes`, `--denoise` and `--bleed` also show the stems after the suggested clean-up, noise reduction or bleed suppression (`--out` keeps the bleed-suppressed copies to listen to). `voice-denoise <model folder> <input> <output.wav> [--reduction=dB]` runs the voice model on one file.
+- **Command line:** `stem-report <folder of stems> [--json] [--apply-fixes] [--denoise[=dB]] [--bleed[=light|medium|strong]] [--out=folder]` prints the same stem report without the app; `--apply-fixes`, `--denoise` and `--bleed` also show the stems after the suggested clean-up, noise reduction or bleed suppression (`--out` keeps the bleed-suppressed copies to listen to). `voice-denoise <model folder> <input> <output.wav> [--reduction=dB]` runs the voice model on one file. `drums-to-midi <drums.wav> --out=drums.mid [--grid=16|32|0]` transcribes a drum stem.
 - **Data locations:** profiles in `%LOCALAPPDATA%\StemDAWg\profiles.json`, logs in `%LOCALAPPDATA%\StemDAWg\logs`, the SoundFont in `%LOCALAPPDATA%\StemDAWg\SoundFonts`.
 
 ## Documentation
@@ -105,6 +106,7 @@ A git-ignored `CMakeUserPresets.json` can hard-code your Qt path (for example `l
 - [Milestone 3: noise removal](docs/milestone-3/M3-Noise-Removal.md): spectral noise reduction, hum removal, voice denoise, Listen to Removed
 - [Milestone 4: AI-artifact repair](docs/milestone-4/M4-Artifact-Repair.md): bleed suppression between stems, transient restoration, harshness and shimmer control, stereo repair
 - [Milestone 5: Mastering](docs/milestone-5/M5-Mastering.md): the master bus, true-peak limiter and loudness matching, tonal balance against reference tracks, soft clipper and multiband compressor, export presets per destination
+- [Milestone 6: Audio to MIDI](docs/milestone-6/M6-Audio-to-MIDI.md): drums to MIDI, beat and downbeat tracking, exact MIDI timing
 - [Milestone 1 technical specification](docs/milestone-1/M1-Technical-Specification.md): architecture, real-time rules, file formats
 - [Implementation sequence](docs/milestone-1/M1-Implementation-Sequence.md)
 - [Contributing](CONTRIBUTING.md)
@@ -120,7 +122,7 @@ project/       model, project.json + migrations, profiles      (no JUCE/Qt)
 session/       media loading, snapshots, import, render/export, stem report
 ai/            analysis service, analyzers, ONNX backend       (no JUCE/Qt)
 apps/desktop/  Qt application
-tools/         stem-report command-line tool
+tools/         command-line tools: stem-report, voice-denoise, drums-to-midi
 assets/        logo and icon masters
 tests/         unit, regression and integration tests
 ```

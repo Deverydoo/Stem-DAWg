@@ -389,6 +389,10 @@ void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
     QMenu menu(this);
     menu.addAction(tr("Rename Track..."), this, &TrackHeader::renameRequested);
     menu.addAction(tr("Clean-up..."), this, &TrackHeader::cleanupRequested);
+    QMenu* midi = menu.addMenu(tr("Drums to MIDI"));
+    midi->addAction(tr("Quantise to 1/16 Notes"), this, [this] { Q_EMIT drumsToMidiRequested(16); });
+    midi->addAction(tr("Quantise to 1/32 Notes"), this, [this] { Q_EMIT drumsToMidiRequested(32); });
+    midi->addAction(tr("As Played"), this, [this] { Q_EMIT drumsToMidiRequested(0); });
     menu.addSeparator();
     menu.addAction(tr("Delete Track"), this, &TrackHeader::deleteRequested);
     menu.exec(event->globalPos());
@@ -477,6 +481,7 @@ void TrackPanel::setTracks(const std::vector<TrackHeaderState>& tracks)
             connect(header, &TrackHeader::soloToggled, this,
                     [this, id](bool on, bool additive) { Q_EMIT soloToggled(id, on, additive); });
             connect(header, &TrackHeader::cleanupRequested, this, [this, id] { Q_EMIT cleanupRequested(id); });
+            connect(header, &TrackHeader::drumsToMidiRequested, this, [this, id](int grid) { Q_EMIT drumsToMidiRequested(id, grid); });
             connect(header, &TrackHeader::renameRequested, this, [this, id] { Q_EMIT renameRequested(id); });
             connect(header, &TrackHeader::deleteRequested, this, [this, id] { Q_EMIT deleteRequested(id); });
             header->show();

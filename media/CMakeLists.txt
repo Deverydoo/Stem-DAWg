@@ -10,6 +10,7 @@ daw_add_module(media
         src/PeakPyramid.cpp
         src/PeakCache.cpp
         src/Midi.cpp
+        src/MidiFile.cpp
         src/TinySoundFont.cpp
         src/DebArchive.cpp
         src/TarGzArchive.cpp

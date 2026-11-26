@@ -17,6 +17,7 @@
 #include <daw/session/NoiseTools.h>
 #include <daw/session/VoiceTools.h>
 #include <daw/session/Destinations.h>
+#include <daw/session/DrumMidi.h>
 #include <daw/session/Renderer.h>
 #include <daw/session/StemReport.h>
 #include <daw/session/UndoStack.h>
@@ -154,6 +155,12 @@ public:
     };
     void exportForDestinations(daw::ExportRequest request, std::vector<DestinationFile> files);
 
+    /// Transcribes a drum track to a General MIDI file in the background,
+    /// saves it (the project's Exports folder; Documents/Stem DAWg/MIDI for
+    /// an untitled project) and imports it as a MIDI track. `grid`: notes per
+    /// whole note to quantise to (16, 32), 0 = keep the played timing.
+    void drumsToMidi(const daw::TrackId& track, int grid);
+
     std::int64_t playheadProjectFrames() const;
     void seekProjectFrames(std::int64_t frame);
 
@@ -170,6 +177,7 @@ Q_SIGNALS:
     void exportProgress(double fraction);
     /// `warning`: written, but clipped or without the requested artwork.
     void exportFinished(bool ok, bool warning, const QString& message, const QString& path);
+    void drumsToMidiFinished(bool ok, const QString& message, const QString& path);
     void stemReportProgress(double fraction);
     /// A new report arrived, it went out of date, or it started/stopped running.
     void stemReportChanged();

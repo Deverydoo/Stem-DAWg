@@ -72,8 +72,9 @@ Milestone 1, the engineering foundation, is done: the engine, projects, waveform
 
 ### M6: Audio to MIDI
 - **MIDI playback** ✅ **done early:** `.mid` files import as tracks rendered through a General MIDI SoundFont (FluidR3_GM, downloaded in the app), so Suno's own MIDI (advanced stem split) can be compared with, layered on, or used to replace the audio stems. See [MIDI-Playback.md](milestone-2/MIDI-Playback.md).
-- **Drums first:** onsets (existing) → hit classification (kick / snare / clap / hats / toms from band-energy features, then an ML drum-transcription model) → quantise to a detected tempo grid → General MIDI drum file (`.mid`). This lets you rebuild a Suno beat with real drum samples.
-- **Tempo and grid detection** (also improves the bar.beat display).
+- **Drums to MIDI** ✅ **done** (DSP; an ML model may follow): a drum stem becomes a General MIDI file (kick, snare, closed and open hi-hat, crash) on the song's beats, quantised within each beat, with a tempo change on every beat so it stays on the audio. Instrument templates are learned from the song's own hits and fitted together (non-negative least squares), hats and crashes told apart by their ring. Measured on Suno's drum MIDI rendered through the SoundFont: kick F 0.97, hat 0.92, snare 0.84, crash 0.75; on the real stem, kicks 0.86. Toms are not transcribed yet. See [M6-Audio-to-MIDI.md](milestone-6/M6-Audio-to-MIDI.md).
+- **Tempo and beat tracking** ✅ **done** for drums: Suno songs drift (135 → 138 BPM and back within one song), so the beats are tracked on the drum hits by dynamic programming that follows the local tempo (beats F 0.88-0.93), with downbeats decided beat by beat (80-83 % of bars). Still open: the project's bar.beat ruler from it, and beats for songs without drums.
+- **MIDI timing fixed:** the MIDI loader used for playback (TinyMidiLoader) rounded at every tempo change, so an imported Suno MIDI file drifted 0.34 s early over a 6-minute song; our own reader replaces it.
 - **Pitched lines:** bass and synth via Spotify's Basic Pitch (Apache-2.0, ONNX-exportable), then polyphonic models for keys.
 
 ### Later

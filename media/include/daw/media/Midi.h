@@ -10,8 +10,10 @@
 // report and export all work unchanged. The tempo map of the file is honoured
 // (Suno's MIDI exports follow the song's tempo beat by beat).
 //
-// Parsing uses TinyMidiLoader and synthesis TinySoundFont (both MIT). Event
-// times are resolved to the millisecond by the loader.
+// Synthesis uses TinySoundFont (MIT). Files are parsed by MidiFile.h, which
+// keeps event times exact through the tempo map (TinyMidiLoader, used before
+// 0.4, rounded at every tempo change and drifted by a third of a second over
+// a Suno MIDI export).
 
 #include <daw/core/AudioAsset.h>
 #include <daw/core/CancellationToken.h>

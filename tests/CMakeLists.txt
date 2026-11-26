@@ -7,6 +7,7 @@ include(Catch)
 # Test audio is generated at runtime; no binary fixtures are committed.
 add_library(daw_test_support STATIC
     support/TestSignals.cpp
+    support/SyntheticDrums.cpp
     support/TempDir.cpp)
 target_include_directories(daw_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(daw_test_support PUBLIC daw::core PRIVATE daw::compile_options)
@@ -49,6 +50,7 @@ daw_add_test(daw_dsp_tests
         dsp/MasterTests.cpp
         dsp/TonalTests.cpp
         dsp/DynamicsTests.cpp
+        dsp/DrumTests.cpp
     LIBS daw::dsp)
 
 # The engine test binary replaces global operator new/delete (AllocationGuard)
@@ -72,6 +74,7 @@ daw_add_test(daw_media_tests
         media/ResamplerTests.cpp
         media/AudioTagsTests.cpp
         media/MidiTests.cpp
+        media/MidiFileTests.cpp
         media/Rf64Tests.cpp
         media/ArchiveTests.cpp
     LIBS daw::media)
@@ -104,4 +107,5 @@ daw_add_test(daw_integration_tests
         integration/BleedToolsTests.cpp
         integration/MasteringTests.cpp
         integration/DestinationTests.cpp
+        integration/DrumMidiTests.cpp
     LIBS daw::session daw::ai)
