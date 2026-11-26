@@ -327,7 +327,8 @@ The tests drive a hypothetical v0 → v1 migration (seconds → frames) end to e
 
 ### 7.6 Final render (Export Mix)
 
-- `renderMix` runs a private `AudioEngine` over the same snapshot type the live engine plays, so exports match playback (mixer, pan law, mute/solo, ramps). It renders **at the project sample rate from the original media**, resampling only media whose native rate differs, never from the device-rate playback copies.
+- `renderMix` runs a private `AudioEngine` over the same snapshot type the live engine plays, so exports match playback (mixer, pan law, mute/solo, ramps). It renders **at the project sample rate from the original media**, resampling only media whose native rate differs, never from the device-rate playback copies. `RenderOptions::sampleRate` renders at another rate instead (added in M5 for export presets: CD is 44.1 kHz): the media are resampled once to it and project frames mapped to it, as for playback on a device at that rate.
+- Export presets per destination (`exportForDestination`, M5) master a copy of the project for streaming, Bandcamp, club or CD by Match Loudness at the file's rate, then render; see [M5-Mastering.md](../milestone-5/M5-Mastering.md#4-export-presets-per-destination-sessiondestinations).
 - Formats: WAV 24-bit PCM (default), 16-bit PCM with TPDF dither (±1 LSB, deterministic seed), 32-bit float (keeps overs). Files are written atomically. A file over 4 GB is written as RF64 (EBU Tech 3306, added in M2): a `ds64` chunk carries the 64-bit sizes, and the tag reader understands it.
 - The export report gives size, duration, sample peak and the number of clipped samples; clipping shows a warning with the master reduction needed. The export dialog warns when solo or mute will leave tracks out.
 
@@ -399,7 +400,7 @@ The other five workspaces (Mixer, Piano Roll, Spectral, Reconstruction, Masterin
 
 ## 11. Testing strategy
 
-Run with `ctest --preset local-debug` (or `-C Release`). There are 251 CTest cases in 7 executables (as of M5), all generated audio (no binary fixtures):
+Run with `ctest --preset local-debug` (or `-C Release`). There are 254 CTest cases in 7 executables (as of M5), all generated audio (no binary fixtures):
 
 | Binary | Covers |
 |--------|--------|

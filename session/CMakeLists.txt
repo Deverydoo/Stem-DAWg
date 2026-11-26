@@ -9,6 +9,7 @@ daw_add_module(session
         src/SnapshotBuilder.cpp
         src/MasteringTools.cpp
         src/Renderer.cpp
+        src/Destinations.cpp
         src/StemReport.cpp
         src/UndoStack.cpp
         src/NoiseTools.cpp

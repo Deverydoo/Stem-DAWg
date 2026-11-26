@@ -48,7 +48,9 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
                               const CancellationToken& cancel)
 {
     const auto started = std::chrono::steady_clock::now();
-    const double rate = model.sampleRate;
+    // Another rate than the project's works like playback on a device at
+    // that rate: the media at that rate, project frames mapped to it.
+    const double rate = options.sampleRate > 0.0 ? options.sampleRate : model.sampleRate;
     if (!(rate > 0.0))
         return makeError(ErrorCode::InvalidArgument, "project has no sample rate");
 

@@ -74,6 +74,7 @@ MasterSettings applyLoudnessMatch(MasterSettings master, const LoudnessMatch& ma
 
 struct LoudnessMatchOptions {
     std::function<void(double)> progress; // 0..1, from the calling thread
+    double sampleRate = 0.0;              // the rate the master will be rendered at; 0 = the project rate
 };
 
 /// Finds the master fader setting for `targetLufs` with the limiter of

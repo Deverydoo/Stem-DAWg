@@ -16,6 +16,7 @@
 #include <daw/session/MasteringTools.h>
 #include <daw/session/NoiseTools.h>
 #include <daw/session/VoiceTools.h>
+#include <daw/session/Destinations.h>
 #include <daw/session/Renderer.h>
 #include <daw/session/StemReport.h>
 #include <daw/session/UndoStack.h>
@@ -145,6 +146,13 @@ public:
 
     /// Renders and writes the mix in the background; reports via exportFinished.
     void exportMix(daw::ExportRequest request);
+    /// One file per destination, each mastered for it (the project is not
+    /// changed), one after the other; reports via exportFinished.
+    struct DestinationFile {
+        const daw::Destination* destination = nullptr;
+        std::filesystem::path path;
+    };
+    void exportForDestinations(daw::ExportRequest request, std::vector<DestinationFile> files);
 
     std::int64_t playheadProjectFrames() const;
     void seekProjectFrames(std::int64_t frame);

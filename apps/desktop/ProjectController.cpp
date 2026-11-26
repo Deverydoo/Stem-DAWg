@@ -1089,6 +1089,104 @@ void ProjectController::exportMix(daw::ExportRequest request)
         });
 }
 
+void ProjectController::exportForDestinations(daw::ExportRequest request, std::vector<DestinationFile> files)
+{
+    struct Outcome {
+        DestinationFile file;
+        std::optional<daw::DestinationExportReport> report;
+        std::string error;
+    };
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    QPointer<ProjectController> self(this);
+    runInBackground(
+        [this, self, model, request, files, token]() -> daw::Result<std::vector<Outcome>> {
+            std::vector<Outcome> outcomes;
+            const auto count = static_cast<double>(files.size());
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                daw::RenderOptions options;
+                options.progress = [this, self, i, count](double p) {
+                    const double overall = (static_cast<double>(i) + p) / count;
+                    QMetaObject::invokeMethod(this, [self, overall] { if (self) Q_EMIT self->exportProgress(overall); }, Qt::QueuedConnection);
+                };
+                daw::ExportRequest fileRequest = request;
+                fileRequest.path = files[i].path;
+                auto report = daw::exportForDestination(model, pool_, *files[i].destination, fileRequest, options, token);
+                if (!report && report.error().code == daw::ErrorCode::Cancelled)
+                    return report.error();
+                Outcome outcome{files[i], {}, {}};
+                if (report)
+                    outcome.report = std::move(*report);
+                else
+                    outcome.error = report.error().describe();
+                outcomes.push_back(std::move(outcome));
+            }
+            return outcomes;
+        },
+        [this](daw::Result<std::vector<Outcome>>& result) {
+            if (!result) {
+                Q_EMIT exportFinished(false, true, QString::fromStdString(result.error().describe()), {});
+                return;
+            }
+            QStringList lines;
+            QString firstFile;
+            bool anyWritten = false, warning = false;
+            QString artworkWarning;
+            for (const Outcome& o : *result) {
+                const QString file = toQString(o.file.path);
+                const QString name = QFileInfo(file).fileName();
+                const QString key = QString::fromUtf8(o.file.destination->key);
+                if (!o.report) {
+                    warning = true;
+                    lines << tr("%1: failed: %2").arg(key, QString::fromStdString(o.error));
+                    daw::logging::warn("export", "destination export failed", {{"destination", o.file.destination->key}, {"error", o.error}});
+                    continue;
+                }
+                if (firstFile.isEmpty())
+                    firstFile = file;
+                anyWritten = true;
+                const daw::LoudnessMatch& m = o.report->match;
+                const daw::RenderReport& r = o.report->file.render;
+                const int bits = o.file.destination->format == daw::WavSampleFormat::Pcm16 ? 16 : 24;
+                QString line = tr("%1: %2\n    %3 LUFS, true peak %4 dBTP, %5-bit %6 kHz, master fader %7 dB.")
+                                   .arg(key, name)
+                                   .arg(r.loudness.integratedLufs, 0, 'f', 1)
+                                   .arg(r.loudness.truePeakDbtp, 0, 'f', 1)
+                                   .arg(bits)
+                                   .arg(r.sampleRate / 1000.0, 0, 'g', 3)
+                                   .arg(std::clamp(m.masterGainDb, daw::kSilenceDb, 12.0), 0, 'f', 1);
+                if (m.clipper)
+                    line += QStringLiteral(" ") + tr("Soft clipper on (rounds off %1 % of the samples).").arg(m.clippedShare * 100.0, 0, 'f', 1);
+                if (!m.reached) {
+                    warning = true;
+                    line += QStringLiteral("\n    ")
+                            + tr("Short of the %1 LUFS target: louder would take more limiting or clipping than the mix can stand.")
+                                  .arg(o.file.destination->lufs, 0, 'f', 0);
+                }
+                lines << line;
+                if (!o.report->file.artworkWarning.empty())
+                    artworkWarning = QString::fromStdString(o.report->file.artworkWarning);
+                daw::logging::info("export", "exported for destination",
+                                   {{"destination", o.file.destination->key},
+                                    {"file", file.toStdString()},
+                                    {"lufs", r.loudness.integratedLufs},
+                                    {"truePeakDbtp", r.loudness.truePeakDbtp},
+                                    {"masterGainDb", m.masterGainDb},
+                                    {"clipper", m.clipper},
+                                    {"reached", m.reached},
+                                    {"renderSeconds", r.renderSeconds}});
+            }
+            QString message = result->size() == 1 ? tr("Exported, mastered for the destination:") : tr("Exported %n file(s), each mastered for its destination:", nullptr, static_cast<int>(result->size()));
+            message += QStringLiteral("\n\n") + lines.join(QStringLiteral("\n\n"));
+            message += QStringLiteral("\n\n") + tr("Your project's master settings are unchanged.");
+            if (!artworkWarning.isEmpty()) {
+                warning = true;
+                message += QStringLiteral("\n\n") + tr("Artwork was not embedded: %1").arg(artworkWarning);
+            }
+            Q_EMIT exportFinished(anyWritten, warning, message, firstFile);
+        });
+}
+
 void ProjectController::loadAllMedia()
 {
     loadMediaItems(model_.media);

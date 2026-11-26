@@ -1112,6 +1112,8 @@ void MainWindow::exportMixDialog()
     input.song = model.release;
     input.projectName = project_->displayName();
     input.formatIndex = settings.value(QStringLiteral("export/format"), 0).toInt();
+    input.destinationIndex = settings.value(QStringLiteral("export/destination"), 0).toInt();
+    input.projectRate = model.sampleRate;
     input.suggestedDirectory = settings.value(QStringLiteral("export/lastDir")).toString();
     if (input.suggestedDirectory.isEmpty() && !project_->isUntitled())
         input.suggestedDirectory = QString::fromStdString(daw::pathToUtf8(project_->root() / "Exports"));
@@ -1136,6 +1138,7 @@ void MainWindow::exportMixDialog()
     const QString path = dialog.path();
     QDir().mkpath(QFileInfo(path).absolutePath());
     settings.setValue(QStringLiteral("export/format"), dialog.formatIndex());
+    settings.setValue(QStringLiteral("export/destination"), dialog.destinationIndex());
     settings.setValue(QStringLiteral("export/lastDir"), QFileInfo(path).absolutePath());
 
     daw::ExportRequest request;
@@ -1145,7 +1148,17 @@ void MainWindow::exportMixDialog()
     request.metadata = dialog.resolved();
     request.software = "Stem DAWg " DAW_APP_VERSION;
     busyLabel_->setText(tr("Rendering..."));
-    project_->exportMix(std::move(request));
+    const auto destinations = dialog.destinations();
+    if (destinations.empty()) {
+        project_->exportMix(std::move(request));
+        return;
+    }
+    // One destination: the path as typed (the suggestion carries its name).
+    // Several: each file is named after its destination.
+    std::vector<ProjectController::DestinationFile> files;
+    for (const daw::Destination* d : destinations)
+        files.push_back({d, destinations.size() == 1 ? request.path : daw::destinationPath(request.path, *d)});
+    project_->exportForDestinations(std::move(request), std::move(files));
 }
 
 void MainWindow::openPaths(const QStringList& paths)

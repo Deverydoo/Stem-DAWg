@@ -103,4 +103,5 @@ daw_add_test(daw_integration_tests
         integration/VoiceToolsTests.cpp
         integration/BleedToolsTests.cpp
         integration/MasteringTests.cpp
+        integration/DestinationTests.cpp
     LIBS daw::session daw::ai)

@@ -30,6 +30,7 @@ namespace daw {
 
 struct RenderOptions {
     int blockSize = 2048;
+    double sampleRate = 0.0; // the rate to render at; 0 = the project rate
     std::function<void(double)> progress; // 0..1, called from the rendering thread
 };
 

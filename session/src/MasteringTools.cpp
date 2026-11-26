@@ -184,6 +184,7 @@ Result<LoudnessMatch> matchLoudness(const ProjectModel& model, const MediaPool& 
     dry.master.multiband = false;
     dry.master.clipper = false;
     RenderOptions renderOptions;
+    renderOptions.sampleRate = options.sampleRate;
     renderOptions.progress = [&](double fraction) {
         if (options.progress)
             options.progress(0.3 * fraction);

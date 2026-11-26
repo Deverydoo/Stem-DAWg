@@ -5,8 +5,7 @@ M5 turns a cleaned-up mix into a release: loud enough for where it is going, nev
 - **The master bus** with a **true-peak limiter**, and **loudness matching** to a target.
 - **Tonal balance** against reference tracks you choose, with a **master EQ** and suggested moves.
 - **Louder masters:** a **soft clipper** for loudness, and a **multiband compressor** for control.
-
-Export presets follow (see [the roadmap](../ROADMAP.md#m5-mastering)).
+- **Export presets per destination:** streaming, Bandcamp, club and CD masters from one mix, in one export.
 
 ## 1. The master bus, the true-peak limiter and loudness matching (`dsp/MasterChain`, `session/MasteringTools`)
 
@@ -155,3 +154,39 @@ Master panel: **Multiband** (threshold and ratio per band) and **Clipper** (clip
 - `daw_dsp_tests` `[clipper]`, `[multiband]`: the clipper off is an exact delay; under its knee it passes the audio within the filters' ripple; a clipped 9 kHz tone stays near the clip level with its folded harmonic over 55 dB down; the share it touches matches the share predicted from the signal (2 % ± 0.2); the master chain with the clipper never passes the ceiling. The multiband's bands add back up flat at 40 Hz–8 kHz; a band compresses by the static curve (10 dB over at 2:1 comes out 5 dB down) and the others stay (within the crossovers' overlap); no allocation.
 - `daw_integration_tests` `[master]`: Match Loudness reaches −14 LUFS without the clipper; for −5 LUFS on a dense mix it adds the clipper, stops at both budgets and says so, and the export of the result measures what the match promised.
 - Serialization (round trip, clamping) and the snapshot for both.
+
+## 4. Export presets per destination (`session/Destinations`)
+
+### What a destination is
+
+One mix goes to several places, and each wants a different master. A destination sets the loudness target, the true-peak ceiling, the bit depth and the sample rate:
+
+| Destination | Loudness | Ceiling | File | Why |
+|---|---|---|---|---|
+| Streaming (Spotify, Apple Music, YouTube, Tidal) | −14 LUFS | −1 dBTP | 24-bit, project rate | the services turn louder songs down to −14 LUFS (Apple Music −16), so one master at −14 plays at full level everywhere; −1 dBTP leaves their codecs headroom; 24-bit is what distributors prefer |
+| Bandcamp and downloads | −10 LUFS | −1 dBTP | 24-bit, project rate | no normalisation, and buyers compare with other releases; Bandcamp also streams and sells lossy copies |
+| Club and DJs | −8 LUFS | −1 dBTP | 24-bit, project rate up to 48 kHz | the level of club and techno masters; DJ players take 44.1/48 kHz WAV, so 88.2/176.4 kHz come down to 44.1 and other high rates to 48 |
+| CD (Red Book) | −10 LUFS | −0.3 dBTP | 16-bit dithered, 44.1 kHz | the Red Book format; no lossy codec follows on the disc |
+
+A separate Apple Music master is left out on purpose: a distributor takes one file for every service, and a −14 LUFS master is only turned down 2 dB by Apple.
+
+### How a destination's file is made
+
+On a copy of the project, at the rate the file will have: Match Loudness for the destination's target with its ceiling (the limiter, and the soft clipper when the limiter alone falls short, within the same budgets), then the render with the result. The tracks, their clean-up, the master EQ and the multiband settings stay as mixed; the project's own master fader and settings are not changed. Another rate than the project's works like playback on a device at that rate: the media are resampled once to the file's rate (for the match and the render), the project's frames mapped to it, and the limiter and the true-peak measurement run at the file's rate, so resampling cannot add overs after the limiter.
+
+On the 9-stem export (6:21), all four in one go, 88 s:
+
+| File | Loudness | True peak | Format | Master fader |
+|---|---|---|---|---|
+| Streaming | −14.0 LUFS | −1.0 dBTP | 24-bit 48 kHz | −1.7 dB |
+| Bandcamp | −10.0 LUFS | −1.0 dBTP | 24-bit 48 kHz | +3.9 dB |
+| Club | −8.6 LUFS, short of −8 (clipper at its 2 % budget) | −1.1 dBTP | 24-bit 48 kHz | +3.8 dB |
+| CD | −10.0 LUFS | −0.3 dBTP | 16-bit 44.1 kHz | +3.0 dB |
+
+### In the app
+
+**File → Export Mix** has a **Destination**: *As mixed* (the master exactly as set: the export as before), one destination, or *All 4 destinations* (one file each, named after it: `Song (Streaming).wav`, `Song (CD).wav`...). The dialog lists what each file will be; the summary afterwards gives each file's loudness, true peak, format and master fader, and says when the clipper was needed or a target was out of reach.
+
+### Tests
+
+- `daw_integration_tests` `[destinations]`: each destination's file, exported from a 48 kHz project, has the destination's rate (CD 44.1 kHz) and length, 16-bit samples only for CD, measures the loudness the match promised (the target when reached) under the destination's ceiling, and the project is unchanged; progress runs to 1 without going back. The rate rules (club caps at 48 kHz, 88.2 kHz goes to 44.1) and file names; a destination's master keeps the mix and the EQ and sets the fader, limiter, ceiling, target and clipper.

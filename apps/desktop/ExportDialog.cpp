@@ -6,6 +6,8 @@
 #include "HelpText.h"
 #include "ProfileDialog.h"
 
+#include <daw/core/Files.h>
+
 #include <QComboBox>
 #include <QDate>
 #include <QDialogButtonBox>
@@ -49,6 +51,15 @@ QString safeFileName(QString name)
     return name.isEmpty() ? QStringLiteral("Mix") : name;
 }
 
+QString describe(const daw::Destination& d, double projectRate)
+{
+    return QObject::tr("%1 LUFS, true peak under %2 dBTP, %3-bit %4 kHz")
+        .arg(d.lufs, 0, 'f', 0)
+        .arg(d.ceilingDbtp, 0, 'g', 2)
+        .arg(d.format == daw::WavSampleFormat::Pcm16 ? 16 : 24)
+        .arg(daw::destinationSampleRate(d, projectRate) / 1000.0, 0, 'g', 3);
+}
+
 } // namespace
 
 ExportDialog::ExportDialog(Input input, std::function<std::optional<daw::ProfileLibrary>(const std::string&)> editProfiles,
@@ -56,7 +67,7 @@ ExportDialog::ExportDialog(Input input, std::function<std::optional<daw::Profile
     : QDialog(parent), input_(std::move(input)), editProfiles_(std::move(editProfiles))
 {
     setWindowTitle(tr("Export Mix"));
-    resize(620, 600);
+    resize(640, 680);
 
     // ---- profile
     auto* profileBox = new QGroupBox(tr("Artist profile"), this);
@@ -113,6 +124,27 @@ ExportDialog::ExportDialog(Input input, std::function<std::optional<daw::Profile
     // ---- file
     auto* fileBox = new QGroupBox(tr("File"), this);
     auto* fileForm = new QFormLayout(fileBox);
+    destination_ = new QComboBox(fileBox);
+    destination_->addItem(tr("As mixed (your master settings)"));
+    for (const daw::Destination& d : daw::destinations())
+        destination_->addItem(QStringLiteral("%1: %2 LUFS").arg(QString::fromUtf8(d.name)).arg(d.lufs, 0, 'f', 0));
+    destination_->addItem(tr("All %n destinations (one file each)", nullptr, static_cast<int>(daw::destinations().size())));
+    destination_->setCurrentIndex(std::clamp(input_.destinationIndex, 0, destination_->count() - 1));
+    const QString destinationTip =
+        helpTip(tr("Destination"),
+                tr("As mixed: the file is your mix with the master exactly as you set it.\n"
+                   "A destination masters a copy for where the song is going: Match Loudness for its target, its true-peak ceiling, "
+                   "bit depth and sample rate. Your project is not changed.\n"
+                   "Streaming services turn louder songs down to -14 LUFS, so a louder master gains nothing there; "
+                   "Bandcamp, clubs and CDs do not, so those masters are louder."));
+    auto* destinationLabel = new QLabel(tr("Destination"), fileBox);
+    destinationLabel->setToolTip(destinationTip);
+    destination_->setToolTip(destinationTip);
+    fileForm->addRow(destinationLabel, destination_);
+    destinationNote_ = new QLabel(fileBox);
+    destinationNote_->setWordWrap(true);
+    destinationNote_->setStyleSheet(QStringLiteral("color: #9a9da5;"));
+    fileForm->addRow(QString(), destinationNote_);
     format_ = new QComboBox(fileBox);
     format_->addItem(tr("WAV 24-bit PCM (recommended: masters, distribution)"));
     format_->addItem(tr("WAV 16-bit PCM, dithered (CD, older players)"));
@@ -136,8 +168,8 @@ ExportDialog::ExportDialog(Input input, std::function<std::optional<daw::Profile
     path_->setToolTip(pathTip);
     fileForm->addRow(pathLabel, pathRow);
 
-    auto* note = new QLabel(tr("The whole song is rendered from the original stems at the project sample rate, with the current faders, pan, "
-                               "mute and solo."),
+    auto* note = new QLabel(tr("The whole song is rendered from the original stems with the current faders, pan, mute and solo, "
+                               "at the project sample rate unless the destination needs another."),
                             this);
     note->setWordWrap(true);
     note->setStyleSheet(QStringLiteral("color: #9a9da5;"));
@@ -191,6 +223,11 @@ ExportDialog::ExportDialog(Input input, std::function<std::optional<daw::Profile
         });
     connect(genre_, &QComboBox::currentTextChanged, this, &ExportDialog::refreshInherited);
     connect(path_, &QLineEdit::textEdited, this, [this] { userEditedPath_ = true; });
+    connect(path_, &QLineEdit::textChanged, this, &ExportDialog::refreshDestination);
+    connect(destination_, &QComboBox::currentIndexChanged, this, [this] {
+        suggestFileName();
+        refreshDestination();
+    });
     connect(browse, &QPushButton::clicked, this, [this] {
         const QString file = QFileDialog::getSaveFileName(this, tr("Export Mix"), path_->text(), tr("WAV audio (*.wav)"));
         if (!file.isEmpty()) {
@@ -207,6 +244,47 @@ ExportDialog::ExportDialog(Input input, std::function<std::optional<daw::Profile
 
     rebuildProfiles(input_.profileId);
     suggestFileName();
+    refreshDestination();
+}
+
+std::vector<const daw::Destination*> ExportDialog::destinations() const
+{
+    const auto all = daw::destinations();
+    const int index = destination_->currentIndex();
+    std::vector<const daw::Destination*> chosen;
+    if (index >= 1 && index <= static_cast<int>(all.size()))
+        chosen.push_back(&all[static_cast<std::size_t>(index - 1)]);
+    else if (index == static_cast<int>(all.size()) + 1)
+        for (const daw::Destination& d : all)
+            chosen.push_back(&d);
+    return chosen;
+}
+
+int ExportDialog::destinationIndex() const
+{
+    return destination_->currentIndex();
+}
+
+void ExportDialog::refreshDestination()
+{
+    const auto chosen = destinations();
+    format_->setEnabled(chosen.empty());
+    if (chosen.empty()) {
+        destinationNote_->setText(tr("The master fader, limiter and loudness target as you set them."));
+        return;
+    }
+    if (chosen.size() == 1) {
+        destinationNote_->setText(tr("Mastered for %1 on a copy of the project: %2. Your master settings are not changed.")
+                                      .arg(QString::fromUtf8(chosen.front()->key), describe(*chosen.front(), input_.projectRate)));
+        return;
+    }
+    QStringList lines;
+    lines << tr("One file each, mastered on a copy of the project:");
+    const std::filesystem::path base = daw::utf8ToPath(path().toStdString());
+    for (const daw::Destination* d : chosen)
+        lines << QStringLiteral("%1  (%2)")
+                     .arg(QString::fromStdString(daw::pathToUtf8(daw::destinationPath(base, *d).filename())), describe(*d, input_.projectRate));
+    destinationNote_->setText(lines.join(QLatin1Char('\n')));
 }
 
 void ExportDialog::rebuildProfiles(const std::string& selectId)
@@ -287,6 +365,9 @@ void ExportDialog::suggestFileName()
     QString base = q(r.title);
     if (!r.artist.empty())
         base = q(r.artist) + QStringLiteral(" - ") + base;
+    const auto chosen = destinations();
+    if (chosen.size() == 1)
+        base += QStringLiteral(" (%1)").arg(QString::fromUtf8(chosen.front()->key));
     const QString dir = input_.suggestedDirectory.isEmpty() ? QDir::homePath() : input_.suggestedDirectory;
     path_->setText(QDir(dir).filePath(safeFileName(base) + QStringLiteral(".wav")));
 }
