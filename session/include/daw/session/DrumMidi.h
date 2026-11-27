@@ -22,6 +22,7 @@
 #include <daw/project/ProjectModel.h>
 #include <daw/session/MediaPool.h>
 
+#include <optional>
 #include <string>
 
 namespace daw {
@@ -57,5 +58,12 @@ Result<DrumMidiResult> drumsToMidi(const AudioAsset& audio, const DrumMidiOption
 /// file lines up with the song. The project is not changed.
 Result<DrumMidiResult> trackDrumsToMidi(const ProjectModel& model, const MediaPool& pool, const TrackId& track,
                                         const DrumMidiOptions& options, const CancellationToken& cancel = {});
+
+/// The first track named like a drum stem ("Drums", "Drum Kit"...), if any.
+std::optional<TrackId> findDrumTrack(const ProjectModel& model);
+
+/// The song's beats, tracked on its drum track (findDrumTrack). Fails when
+/// the project has no drum track or it holds too little rhythm.
+Result<BeatTrack> songBeats(const ProjectModel& model, const MediaPool& pool, const CancellationToken& cancel = {});
 
 } // namespace daw

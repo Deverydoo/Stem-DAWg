@@ -4,9 +4,10 @@ M6 turns stems into MIDI you can edit, re-voice and build on. This document cove
 
 - **Drums to MIDI:** a drum stem becomes a General MIDI drum file (kick, snare, hi-hats, crash) that lines up with the song.
 - **Tempo and beat tracking** that follows an AI song's drifting tempo, with downbeats.
+- **Notes to MIDI:** a pitched stem (bass, guitars, keys, synths, voices) becomes a MIDI file of its notes, with Spotify's Basic Pitch model, on the same beats as the drums (section 5).
 - **Exact MIDI timing:** our own MIDI file reader and writer, replacing a loader that drifted.
 
-Pitched lines (bass, synths, keys) follow; see [the roadmap](../ROADMAP.md#m6-audio-to-midi).
+Toms and the project's bar ruler follow; see [the roadmap](../ROADMAP.md#m6-audio-to-midi).
 
 ## 1. What we measured first
 
@@ -86,14 +87,58 @@ General MIDI, channel 10: kick 36, snare 38, closed hat 42, open hat 46, crash 4
 
 `parseMidiFile` reads Standard MIDI Files (formats 0-2, metrical or SMPTE time, running status, note-on with velocity 0 as note-off) and computes every event's time in double precision through the tempo map. MIDI playback (`renderMidiFile`, `probeMidiFile`) now uses it, so an imported Suno MIDI file stays on its stems to the end. `encodeMidiFile` / `writeMidiFile` write type-1 files: a conductor track (name, tempo map, time signatures) and one track per part.
 
-## 5. In the app
+## 5. Notes to MIDI (`ai/NoteTranscriber`, `session/NoteMidi`)
+
+### The model
+
+[Basic Pitch](https://github.com/spotify/basic-pitch) (Bittner et al., "A Lightweight Instrument-Agnostic Model for Polyphonic Note Transcription and Multipitch Estimation", ICASSP 2022; Spotify, Apache-2.0) is a small convolutional network that hears any instrument, several notes at once. Its ONNX export is 230 KB, so it is compiled into the program (`third_party/basic-pitch`, embedded by `cmake/EmbedFile.cmake`): nothing to download, nothing to deploy next to the app, the tools or the tests.
+
+It hears 2-second windows of 22.05 kHz mono audio and gives, per 11.6 ms frame and piano key, how likely a note sounds there and how likely one starts there. As in Basic Pitch's own inference, the audio is padded with 15 frames of silence, cut into windows 30 frames less than a window apart, and each window keeps its middle. Every kept frame's time is computed exactly from its window's position; the reference code instead corrects by a fixed amount per 172 frames, which drifts by up to 8 ms within each window. Eight windows go to the model at a time; a 6-minute stem takes about 6 seconds.
+
+### Decoding notes
+
+The decoding is Basic Pitch's (`output_to_notes_polyphonic`), ported line for line: onsets are also inferred from jumps in the note activation; each onset peak above a threshold starts a note on its key, latest first, which lasts until the activation stays under 0.3 for 11 frames; then the "melodia" pass repeatedly takes the strongest activation left and follows it both ways, adding notes that sound clearly without a clear start. The melodia pass's whole-matrix search for the maximum (once per note in the reference) is a max-heap here, which finds the same maximum because activations only ever drop to zero.
+
+Checked against the reference pipeline (the Python code at commit fa5997a, run on the same stem through the same ONNX model): 1,446 of its 1,467 notes come out the same, key and start within 8 ms; the rest differ by the resampler and the reference's approximate frame times.
+
+### What the defaults are, and why
+
+Measured on Suno's MIDI parts rendered through the FluidR3_GM SoundFont (exact by construction), notes counted when the key matches and the start is within 50 ms, and a note doubled in octaves (Suno doubles its bass lines) counted once:
+
+- **Shortest note 58 ms** instead of Basic Pitch's 127.7 ms. Suno's bass plays back-to-back sixteenths at 137 BPM, 109 ms each: with the default they were all merged or dropped (bass F 0.60 against 0.70).
+- **Onset threshold by instrument**, from the track's name. Busy lines are found best from onsets of 0.4 (against Basic Pitch's 0.5: bass 0.75 against 0.70, synth keys 0.75 against 0.69, rhythm guitar 0.64 against 0.57; against 0.6: electric guitar 0.65 against 0.50, synth bass 0.57 against 0.40); sustained and sung parts from 0.6, where a lower threshold splits held notes (against 0.5: lead vocal 0.54 against 0.39, electric piano 0.82 against 0.80; against 0.4: backing vocals 0.51 against 0.28, pad 0.45 against 0.40). 0.6 applies to names with vocal, voice, vox, choir, pad, piano, string or organ, 0.4 to everything else.
+
+| Part (Suno's MIDI through the SoundFont) | F | Real Suno stem against Suno's MIDI |
+|---|---|---|
+| Electric piano | 0.82 | 0.29 |
+| Bass | 0.75 | 0.61 |
+| Synth keys | 0.75 | 0.50 |
+| Lead electric guitar | 0.70 | 0.44 |
+| Electric guitar / rhythm guitar | 0.65 / 0.64 | 0.41 / 0.42 |
+| Synth lead | 0.65 | 0.59 |
+| Synth bass | 0.57 | 0.61 |
+| Lead vocal / backing vocals | 0.54 / 0.51 | 0.29 / 0.22 |
+| Synth pad | 0.45 | 0.23 |
+
+The real stems are scored against Suno's MIDI aligned per 10-second window (it runs early by a varying amount, section 1), so that column says as much about Suno's MIDI as about the transcription. Where notes come out wrong, it is mostly octaves: a low note read an octave up, or a bright tone's upper partials read as notes two or three octaves above it. Notes are not dropped for sitting an octave above another, since octave doublings are real in these songs (Suno's bass parts are doubled throughout).
+
+### The file
+
+Each note becomes a note on its key, on channel 1, with the instrument chosen from the track's name (bass: Electric Bass, synth bass: Synth Bass, pad: Warm Pad, strings, electric piano, overdriven guitar for a lead guitar, choir for backing vocals...). Velocity is Basic Pitch's: 127 times the note's mean activation. When the project has a drum track (its name contains "drum", and it is not a MIDI track), the song's beats are tracked on it and the file uses the same tempo map as Drums to MIDI (`session/BeatTimeline`, shared by both), so the two files line up bar for bar. Without one, the file is a steady 120 BPM and the notes keep their played times. Notes can be quantised to sixteenths within the beat (start and end; a note never shrinks below a sixteenth); by default they are kept as played, since pitched parts are often played off the grid. One note is kept per key and start, and a note is shortened where the next one on its key starts.
+
+## 6. In the app
 
 **Right-click a track name → Drums to MIDI** (quantise to 1/16 notes, to 1/32 notes, or as played), or **Analysis → Drums to MIDI** (the first track named like drums, or else the track the Clean-up panel shows). The track is rendered as it sounds (its clean-up and processed copies included) at unity gain, transcribed in the background, saved as `<track> (drums).mid` in the project's Exports folder (Documents/Stem DAWg/MIDI for an untitled project), and added as a MIDI track when a SoundFont is set, so it can be heard against the stem. The summary gives the notes per instrument, the tempo and the bars.
 
-**`drums-to-midi <drums.wav> [--out=file.mid] [--grid=16]`** does the same from the command line, and scores a transcription: `--reference=ref.mid` (aligned per 10 s, or `--shift=ms`), or a MIDI input with `--soundfont=file.sf2`, which is rendered and transcribed back against itself.
+**Right-click a track name → Notes to MIDI** (as played, or quantised to 1/16 notes), or **Analysis → Notes to MIDI** for the track the Clean-up panel shows: the track is rendered as it sounds, transcribed in the background, saved as `<track> (notes).mid` next to the drum file, and added as a MIDI track. The summary gives the notes, their range, the instrument, and whether the file follows the song's beats (and from which drum track).
 
-## 6. Tests
+**`drums-to-midi <drums.wav> [--out=file.mid] [--grid=16]`** does the same from the command line, and scores a transcription: `--reference=ref.mid` (aligned per 10 s, or `--shift=ms`), or a MIDI input with `--soundfont=file.sf2`, which is rendered and transcribed back against itself. **`notes-to-midi <stem.wav> [--out=file.mid] [--beats=drums.wav] [--grid=16]`** does the same for a pitched stem, with the same scoring (`--reference`, or a MIDI input with `--soundfont`; `--onset`, `--frame`, `--min-note` override the decoding).
+
+## 7. Tests
 
 - `daw_dsp_tests` `[drums]`: a synthesised kit (kick, snare, closed and open hats choked by the next, crash) plays a groove whose tempo drifts from 120 to 126 BPM: kick and hats F >= 0.95 and 0.9, snare >= 0.85, every crash found, hits within 15 ms, open hats told from closed (F >= 0.8); nothing in silence or on a held tone. Beats within 30 ms for 95 %, the tempo between 120 and 126 BPM, 90 % of the downbeats on the bars.
 - `daw_media_tests` `[midifile]`: written files read back (notes, channels, velocities, tempo); 1,000 tempo changes stay exact to a microsecond; running status, velocity-0 note-offs, SMPTE time; broken and truncated files.
+- `daw_ai_tests` `[notes]`: the decoding on hand-made activations (a note from its onset to where the key stops sounding, a repeated note split at its second onset, a note without an onset found by the melodia pass, too-short notes and keys out of range dropped, onsets inferred from a jump); the model on a synthesised bass line with repeated sixteenths (F >= 0.85, starts within 10 ms median and 20 ms for 95 %) and on held chords over it (F >= 0.7); silence holds no notes.
+- `daw_media_tests` `[midifile]`: a track's instrument written as a program change before its notes.
+- `daw_integration_tests` `[notes]`: a bass track to MIDI on the song's beats (the notes, read back through the tempo map, on the audio within 30 ms for 90 %; Electric Bass; a tempo change per beat), quantised to sixteenths; a steady 120 BPM file without beats; a silent track refused; instruments and decoding from track names; one note per key and start, no note running into the next; the drum track found by name, not a MIDI track made from it.
 - `daw_integration_tests` `[drums]`: a drum track to MIDI: notes on the hits within 20 ms through the drifting tempo, a tempo change per beat that follows the drift, the project unchanged; quantisation within the beat, the lead-in and the pickup bar, velocities, as-played positions; a track without rhythm is refused.

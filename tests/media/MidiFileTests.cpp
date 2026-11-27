@@ -14,6 +14,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -81,6 +82,26 @@ TEST_CASE("A written MIDI file reads back with its notes, tempo and channels", "
     CHECK(info->noteCount == 10);
     CHECK(info->usesDrums);
     CHECK(info->channelCount == 2);
+}
+
+TEST_CASE("A track's instrument is written as a program change before its notes", "[midi][midifile]")
+{
+    MidiSong song;
+    song.tracks.push_back({"Bass", 2, {{0, 240, 40, 90}}, 33});
+    song.tracks.push_back({"Keys", 3, {{0, 240, 60, 90}}}); // no program
+    const auto parsed = parseMidiFile(encodeMidiFile(song));
+    REQUIRE(parsed.ok());
+    std::vector<MidiEvent> programs;
+    for (const MidiEvent& e : parsed->events)
+        if ((e.status & 0xF0) == 0xC0)
+            programs.push_back(e);
+    REQUIRE(programs.size() == 1);
+    CHECK(programs.front().status == 0xC2);
+    CHECK(programs.front().data1 == 33);
+    // Before the note at the same time.
+    const auto program = std::find_if(parsed->events.begin(), parsed->events.end(), [](const MidiEvent& e) { return e.status == 0xC2; });
+    const auto note = std::find_if(parsed->events.begin(), parsed->events.end(), [](const MidiEvent& e) { return e.status == 0x92; });
+    CHECK(program < note);
 }
 
 TEST_CASE("MIDI times stay exact through a tempo change on every beat", "[midi][midifile]")

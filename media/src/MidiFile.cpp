@@ -93,6 +93,8 @@ std::string encodeMidiFile(const MidiSong& song)
         if (!track.name.empty())
             events.push_back({0, 0, metaText(0x03, track.name)});
         const char channel = static_cast<char>(track.channel & 0x0F);
+        if (track.program >= 0)
+            events.push_back({0, 0, std::string{static_cast<char>(0xC0 | channel), static_cast<char>(std::min(track.program, 127))}});
         for (const MidiNoteEvent& n : track.notes) {
             const char key = static_cast<char>(std::clamp(n.key, 0, 127));
             events.push_back({n.tick, 2, std::string{static_cast<char>(0x90 | channel), key, static_cast<char>(std::clamp(n.velocity, 1, 127))}});

@@ -59,6 +59,12 @@ Result<std::unique_ptr<MediaPool>> prepareMediaAtRate(const ProjectModel& model,
 Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, const RenderOptions& options = {},
                               const CancellationToken& cancel = {});
 
+/// Renders one track as it sounds (its clean-up and processed copies
+/// included) at unity gain, centred, without the master bus, from project
+/// time 0, so an analysis of it lines up with the song.
+Result<RenderedMix> renderTrackAlone(const ProjectModel& model, const MediaPool& pool, const TrackId& track,
+                                     const CancellationToken& cancel = {});
+
 /// Converts resolved metadata into file tags. `artwork` holds the image bytes
 /// (already read from metadata.artworkPath, or empty).
 AudioTags makeAudioTags(const MetadataFields& resolved, std::string software, std::string artwork = {});

@@ -221,6 +221,7 @@ int main(int argc, char** argv)
             if (!times.empty())
                 end = std::max(end, times.back());
         std::vector<double> lags;
+        std::vector<std::pair<double, double>> windowLags;
         for (double w = 0.0; w <= end; w += kWindow) {
             std::vector<double> kicks;
             for (double x : expected[kKickG])
@@ -241,6 +242,7 @@ int main(int argc, char** argv)
                 }
             }
             lags.push_back(lag);
+            windowLags.emplace_back(w, lag);
             for (auto& times : expected)
                 for (double& x : times)
                     if (x >= w && x < w + kWindow)
@@ -248,6 +250,14 @@ int main(int argc, char** argv)
         }
         for (auto& times : expected)
             std::sort(times.begin(), times.end());
+        // --dump-lags: the lag per window, for notes-to-midi --lag-file
+        // (every part of one MIDI export is offset alike).
+        if (const std::string dump = option(argc, argv, "dump-lags"); !dump.empty()) {
+            std::FILE* f = std::fopen(dump.c_str(), "w");
+            for (const auto& [w, lag] : windowLags)
+                std::fprintf(f, "%.1f %.4f\n", w, lag);
+            std::fclose(f);
+        }
         std::sort(lags.begin(), lags.end());
         char text[96];
         std::snprintf(text, sizeof text, "aligned per 10 s, lags %+.0f..%+.0f ms", lags.empty() ? 0.0 : 1000.0 * lags.front(),

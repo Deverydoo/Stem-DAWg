@@ -8,6 +8,7 @@ include(Catch)
 add_library(daw_test_support STATIC
     support/TestSignals.cpp
     support/SyntheticDrums.cpp
+    support/SyntheticNotes.cpp
     support/TempDir.cpp)
 target_include_directories(daw_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(daw_test_support PUBLIC daw::core PRIVATE daw::compile_options)
@@ -92,6 +93,7 @@ daw_add_test(daw_ai_tests
         ai/AnalyzerTests.cpp
         ai/AnalysisServiceTests.cpp
         ai/InferenceTests.cpp
+        ai/NoteTranscriberTests.cpp
     LIBS daw::ai)
 
 # End-to-end, device-free: the Milestone 1 definition of done.
@@ -108,4 +110,5 @@ daw_add_test(daw_integration_tests
         integration/MasteringTests.cpp
         integration/DestinationTests.cpp
         integration/DrumMidiTests.cpp
+        integration/NoteMidiTests.cpp
     LIBS daw::session daw::ai)

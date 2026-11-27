@@ -112,6 +112,7 @@ Q_SIGNALS:
     void deleteRequested();
     /// `grid`: notes per whole note to quantise to; 0 = as played.
     void drumsToMidiRequested(int grid);
+    void notesToMidiRequested(int grid);
 
 protected:
     void paintEvent(class QPaintEvent* event) override;
@@ -155,6 +156,7 @@ Q_SIGNALS:
     void renameRequested(const QString& trackId);
     void deleteRequested(const QString& trackId);
     void drumsToMidiRequested(const QString& trackId, int grid);
+    void notesToMidiRequested(const QString& trackId, int grid);
     void scrollRequested(int angleDelta);
 
 protected:

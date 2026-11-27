@@ -18,6 +18,7 @@
 #include <daw/session/VoiceTools.h>
 #include <daw/session/Destinations.h>
 #include <daw/session/DrumMidi.h>
+#include <daw/session/NoteMidi.h>
 #include <daw/session/Renderer.h>
 #include <daw/session/StemReport.h>
 #include <daw/session/UndoStack.h>
@@ -161,6 +162,11 @@ public:
     /// whole note to quantise to (16, 32), 0 = keep the played timing.
     void drumsToMidi(const daw::TrackId& track, int grid);
 
+    /// Transcribes the notes of a pitched track (bass, guitar, keys, synth,
+    /// voice) to a MIDI file in the background, on the song's beats when the
+    /// project has a drum track, and saves and imports it like drumsToMidi.
+    void notesToMidi(const daw::TrackId& track, int grid);
+
     std::int64_t playheadProjectFrames() const;
     void seekProjectFrames(std::int64_t frame);
 
@@ -178,6 +184,7 @@ Q_SIGNALS:
     /// `warning`: written, but clipped or without the requested artwork.
     void exportFinished(bool ok, bool warning, const QString& message, const QString& path);
     void drumsToMidiFinished(bool ok, const QString& message, const QString& path);
+    void notesToMidiFinished(bool ok, const QString& message, const QString& path);
     void stemReportProgress(double fraction);
     /// A new report arrived, it went out of date, or it started/stopped running.
     void stemReportChanged();
@@ -232,6 +239,8 @@ private:
     void applyImport(const PendingImport& import);
     template <typename Work, typename Done>
     void runInBackground(Work work, Done done);
+    /// `<root>/Exports/<track> (<suffix>).mid`, or under Documents/Stem DAWg/MIDI for an untitled project.
+    QString midiFilePath(const QString& trackName, const QString& suffix) const;
 
     EngineBridge& engine_;
     daw::AnalysisService& analysis_;
@@ -255,6 +264,7 @@ private:
     std::uint64_t generation_ = 0;      // invalidates results from a previous project
     std::uint64_t snapshotVersion_ = 0;
     std::shared_ptr<daw::VoiceDenoiser> voiceModel_; // loaded on first use
+    std::shared_ptr<daw::NoteTranscriber> noteModel_; // loaded on first use
     int voiceJobs_ = 0;
     int bleedJobs_ = 0;
     bool cleanupBypassed_ = false;

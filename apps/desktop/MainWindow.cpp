@@ -438,6 +438,21 @@ void MainWindow::buildMenus()
     drumsMenu->addAction(tr("Quantise to 1/&16 Notes"), this, [drumsToMidi] { drumsToMidi(16); })->setToolTip(drumsTip);
     drumsMenu->addAction(tr("Quantise to 1/&32 Notes"), this, [drumsToMidi] { drumsToMidi(32); })->setToolTip(drumsTip);
     drumsMenu->addAction(tr("&As Played"), this, [drumsToMidi] { drumsToMidi(0); })->setToolTip(drumsTip);
+    // Notes to MIDI acts on the track the Clean-up panel shows.
+    auto* notesMenu = analysis->addMenu(tr("&Notes to MIDI"));
+    notesMenu->setToolTipsVisible(true);
+    const auto notesToMidi = [this](int grid) {
+        const QString id = cleanupPanel_->currentTrackId();
+        if (id.isEmpty()) {
+            statusBar()->showMessage(tr("Choose a track: right-click its name and choose Notes to MIDI."), 6000);
+            return;
+        }
+        project_->notesToMidi(daw::TrackId(id.toStdString()), grid);
+    };
+    const QString notesTip = tr("Transcribe the notes of the track the Clean-up panel shows (bass, guitar, keys, synth, voice) to a "
+                                "MIDI file, on the song's beats when there is a drum track. For any track, right-click its name.");
+    notesMenu->addAction(tr("&As Played"), this, [notesToMidi] { notesToMidi(0); })->setToolTip(notesTip);
+    notesMenu->addAction(tr("Quantise to 1/&16 Notes"), this, [notesToMidi] { notesToMidi(16); })->setToolTip(notesTip);
     analysis->setToolTipsVisible(true);
 
     auto* cleanup = menuBar()->addMenu(tr("&Clean-up"));
@@ -642,18 +657,24 @@ void MainWindow::connectSignals()
     connect(trackPanel_, &TrackPanel::renameRequested, this, &MainWindow::renameTrackDialog);
     connect(trackPanel_, &TrackPanel::drumsToMidiRequested, this,
             [this](const QString& id, int grid) { project_->drumsToMidi(daw::TrackId(id.toStdString()), grid); });
-    connect(project_.get(), &ProjectController::drumsToMidiFinished, this, [this](bool ok, const QString& message, const QString& path) {
-        if (!ok) {
-            QMessageBox::warning(this, tr("Drums to MIDI"), message);
-            return;
-        }
-        statusBar()->showMessage(tr("Saved %1").arg(QDir::toNativeSeparators(path)), 8000);
-        QMessageBox box(QMessageBox::Information, tr("Drums to MIDI"), message, QMessageBox::Ok, this);
-        auto* show = box.addButton(tr("Show in Folder"), QMessageBox::ActionRole);
-        box.exec();
-        if (box.clickedButton() == show)
-            QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,"), QDir::toNativeSeparators(path)});
-    });
+    connect(trackPanel_, &TrackPanel::notesToMidiRequested, this,
+            [this](const QString& id, int grid) { project_->notesToMidi(daw::TrackId(id.toStdString()), grid); });
+    const auto midiResult = [this](const QString& title) {
+        return [this, title](bool ok, const QString& message, const QString& path) {
+            if (!ok) {
+                QMessageBox::warning(this, title, message);
+                return;
+            }
+            statusBar()->showMessage(tr("Saved %1").arg(QDir::toNativeSeparators(path)), 8000);
+            QMessageBox box(QMessageBox::Information, title, message, QMessageBox::Ok, this);
+            auto* show = box.addButton(tr("Show in Folder"), QMessageBox::ActionRole);
+            box.exec();
+            if (box.clickedButton() == show)
+                QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,"), QDir::toNativeSeparators(path)});
+        };
+    };
+    connect(project_.get(), &ProjectController::drumsToMidiFinished, this, midiResult(tr("Drums to MIDI")));
+    connect(project_.get(), &ProjectController::notesToMidiFinished, this, midiResult(tr("Notes to MIDI")));
     connect(trackPanel_, &TrackPanel::deleteRequested, this,
             [this](const QString& id) { project_->removeTrack(daw::TrackId(id.toStdString())); });
     connect(project_.get(), &ProjectController::undoChanged, this, &MainWindow::refreshUndoActions);

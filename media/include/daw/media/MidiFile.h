@@ -32,6 +32,7 @@ struct MidiTrackData {
     std::string name;
     int channel = 0; // 0..15
     std::vector<MidiNoteEvent> notes;
+    int program = -1; // General MIDI program 0..127 set at the start; -1: none
 };
 
 struct MidiTempoEvent {

@@ -1188,14 +1188,8 @@ void ProjectController::exportForDestinations(daw::ExportRequest request, std::v
         });
 }
 
-void ProjectController::drumsToMidi(const daw::TrackId& trackId, int grid)
+QString ProjectController::midiFilePath(const QString& trackName, const QString& suffix) const
 {
-    const daw::Track* track = model_.findTrack(trackId);
-    if (track == nullptr)
-        return;
-    const daw::ProjectModel model = model_;
-    const auto token = cancel_->token();
-    const QString trackName = QString::fromStdString(track->name);
     // Where the file goes: the project's Exports folder, or for an untitled
     // project (which lives in the app's data folder) Documents/Stem DAWg/MIDI.
     QString folder = untitled_ ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/Stem DAWg/MIDI")
@@ -1205,7 +1199,18 @@ void ProjectController::drumsToMidi(const daw::TrackId& trackId, int grid)
     for (QChar& c : base)
         if (QStringLiteral("<>:\"/\\|?*").contains(c) || c.unicode() < 32)
             c = QLatin1Char('_');
-    const QString path = QDir(folder).filePath(base.trimmed() + QStringLiteral(" (drums).mid"));
+    return QDir(folder).filePath(base.trimmed() + QStringLiteral(" (") + suffix + QStringLiteral(").mid"));
+}
+
+void ProjectController::drumsToMidi(const daw::TrackId& trackId, int grid)
+{
+    const daw::Track* track = model_.findTrack(trackId);
+    if (track == nullptr)
+        return;
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    const QString trackName = QString::fromStdString(track->name);
+    const QString path = midiFilePath(trackName, QStringLiteral("drums"));
     Q_EMIT statusMessage(tr("Transcribing %1 to MIDI...").arg(trackName));
     runInBackground(
         [this, model, trackId, grid, token, path]() -> daw::Result<daw::DrumMidiResult> {
@@ -1248,6 +1253,143 @@ void ProjectController::drumsToMidi(const daw::TrackId& trackId, int grid)
             if (canPlay)
                 importAudio({path});
             Q_EMIT drumsToMidiFinished(true, message, path);
+        });
+}
+
+namespace {
+
+/// "C4" for MIDI key 60.
+QString keyName(int key)
+{
+    static const char* names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    return QString::fromLatin1(names[key % 12]) + QString::number(key / 12 - 1);
+}
+
+/// The General MIDI programs generalMidiProgramFor() picks, by name.
+QString programName(int program)
+{
+    switch (program) {
+    case 0: return QObject::tr("Acoustic Grand Piano");
+    case 4: return QObject::tr("Electric Piano");
+    case 16: return QObject::tr("Organ");
+    case 25: return QObject::tr("Acoustic Guitar");
+    case 27: return QObject::tr("Clean Electric Guitar");
+    case 29: return QObject::tr("Overdriven Guitar");
+    case 33: return QObject::tr("Electric Bass");
+    case 38: return QObject::tr("Synth Bass");
+    case 48: return QObject::tr("Strings");
+    case 52: return QObject::tr("Choir");
+    case 53: return QObject::tr("Voice");
+    case 61: return QObject::tr("Brass");
+    case 73: return QObject::tr("Flute");
+    case 81: return QObject::tr("Saw Lead");
+    case 89: return QObject::tr("Warm Pad");
+    default: return QObject::tr("program %1").arg(program + 1);
+    }
+}
+
+} // namespace
+
+void ProjectController::notesToMidi(const daw::TrackId& trackId, int grid)
+{
+    const daw::Track* track = model_.findTrack(trackId);
+    if (track == nullptr)
+        return;
+    const daw::ProjectModel model = model_;
+    const auto token = cancel_->token();
+    const QString trackName = QString::fromStdString(track->name);
+    const QString path = midiFilePath(trackName, QStringLiteral("notes"));
+    const auto drums = daw::findDrumTrack(model);
+    const QString drumName = drums && *drums != trackId ? QString::fromStdString(model.findTrack(*drums)->name) : QString();
+
+    struct Output {
+        std::shared_ptr<daw::NoteTranscriber> model;
+        daw::Result<daw::NoteMidiResult> result = daw::makeError(daw::ErrorCode::Cancelled, "not run");
+        double bpm = 0.0;
+        std::size_t bars = 0;
+    };
+    Q_EMIT statusMessage(tr("Transcribing the notes of %1 to MIDI...").arg(trackName));
+    QPointer<ProjectController> self(this);
+    runInBackground(
+        [this, self, transcriber = noteModel_, model, trackId, grid, token, path, drums, trackName]() mutable {
+            Output out;
+            if (!transcriber) {
+                auto backend = daw::createOnnxBackend({.intraOpThreads = 4});
+                auto loaded = backend ? daw::NoteTranscriber::load(*backend)
+                                      : daw::Result<std::shared_ptr<daw::NoteTranscriber>>(backend.error());
+                if (!loaded) {
+                    out.result = loaded.error();
+                    return out;
+                }
+                transcriber = *loaded;
+            }
+            out.model = transcriber;
+            // The song's beats, from its drum track (not this track itself).
+            daw::BeatTrack beats;
+            if (drums && *drums != trackId) {
+                if (auto found = daw::songBeats(model, pool_, token))
+                    beats = std::move(*found);
+            }
+            out.bpm = beats.bpm;
+            out.bars = beats.downbeats.size();
+            daw::NoteMidiOptions options;
+            options.grid = grid;
+            int lastPercent = -1;
+            out.result = daw::trackNotesToMidi(model, pool_, trackId, *transcriber, options, beats, token, [&](double p) {
+                const int percent = static_cast<int>(100.0 * p);
+                if (percent / 10 == lastPercent / 10)
+                    return;
+                lastPercent = percent;
+                QMetaObject::invokeMethod(qApp, [self, trackName, percent] {
+                    if (self)
+                        Q_EMIT self->statusMessage(tr("Transcribing the notes of %1: %2%").arg(trackName).arg(percent));
+                });
+            });
+            if (out.result) {
+                if (auto status = daw::writeMidiFile(toPath(path), out.result->song); !status)
+                    out.result = status.error();
+            }
+            return out;
+        },
+        [this, path, trackName, drumName, grid](Output& out) {
+            if (out.model)
+                noteModel_ = out.model;
+            if (!out.result) {
+                if (out.result.error().code != daw::ErrorCode::Cancelled)
+                    Q_EMIT notesToMidiFinished(false, tr("Could not transcribe %1: %2").arg(trackName, QString::fromStdString(out.result.error().message)), {});
+                return;
+            }
+            const daw::NoteMidiResult& r = *out.result;
+            int lowest = 127, highest = 0;
+            for (const daw::PitchedNote& n : r.notes) {
+                lowest = std::min(lowest, n.key);
+                highest = std::max(highest, n.key);
+            }
+            QString message = tr("%1 notes from %2, %3 to %4, played by %5, %6.")
+                                  .arg(r.song.tracks.front().notes.size())
+                                  .arg(trackName, keyName(lowest), keyName(highest), programName(r.program))
+                                  .arg(grid > 0 ? tr("quantised to 1/%1 notes").arg(grid) : tr("as played"));
+            message += QStringLiteral("\n\n");
+            if (r.onBeats)
+                message += tr("On the song's beats, tracked on %1 (%2 BPM, %3 bars): the file changes tempo on every beat, so it "
+                              "stays on the song and lines up with its drum MIDI.")
+                               .arg(drumName)
+                               .arg(out.bpm, 0, 'f', 1)
+                               .arg(out.bars);
+            else
+                message += drumName.isEmpty() ? tr("No drum track to take the beats from, so the file is a steady 120 BPM with the notes "
+                                                   "where they are played (its bar lines are not the song's).")
+                                              : tr("Too little rhythm on %1 to take the beats from, so the file is a steady 120 BPM with "
+                                                   "the notes where they are played.").arg(drumName);
+            message += QStringLiteral("\n\n") + tr("Saved as %1.").arg(QDir::toNativeSeparators(path));
+            const bool canPlay = !soundFont_.empty() && std::filesystem::exists(soundFont_);
+            message += QStringLiteral("\n\n") + (canPlay ? tr("Added as a MIDI track, so you can hear it against the stem.")
+                                                         : tr("Choose a SoundFont (Settings > SoundFont for MIDI) to hear it as a track."));
+            daw::logging::info("midi", "notes to midi", {{"track", trackName.toStdString()}, {"notes", r.notes.size()},
+                                                         {"program", r.program}, {"onBeats", r.onBeats}, {"file", path.toStdString()}});
+            if (canPlay)
+                importAudio({path});
+            Q_EMIT notesToMidiFinished(true, message, path);
         });
 }
 

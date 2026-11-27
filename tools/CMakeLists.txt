@@ -14,3 +14,8 @@ daw_copy_runtime_dlls(voice_denoise)
 add_executable(drums_to_midi drums-to-midi/main.cpp)
 set_target_properties(drums_to_midi PROPERTIES OUTPUT_NAME "drums-to-midi" FOLDER "tools")
 target_link_libraries(drums_to_midi PRIVATE daw::session daw::compile_options)
+
+add_executable(notes_to_midi notes-to-midi/main.cpp)
+set_target_properties(notes_to_midi PROPERTIES OUTPUT_NAME "notes-to-midi" FOLDER "tools")
+target_link_libraries(notes_to_midi PRIVATE daw::session daw::compile_options)
+daw_copy_runtime_dlls(notes_to_midi)

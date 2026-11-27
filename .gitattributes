@@ -5,3 +5,4 @@
 *.ico binary
 *.jpg binary
 *.wav binary
+*.onnx binary

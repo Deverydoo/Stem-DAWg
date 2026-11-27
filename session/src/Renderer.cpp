@@ -126,6 +126,24 @@ Result<RenderedMix> renderMix(const ProjectModel& model, const MediaPool& pool, 
     return RenderedMix{std::move(out), report};
 }
 
+Result<RenderedMix> renderTrackAlone(const ProjectModel& model, const MediaPool& pool, const TrackId& trackId,
+                                     const CancellationToken& cancel)
+{
+    const Track* track = model.findTrack(trackId);
+    if (track == nullptr)
+        return makeError(ErrorCode::NotFound, "no such track");
+    ProjectModel single = model;
+    single.tracks = {*track};
+    Track& only = single.tracks.front();
+    only.gainDb = 0.0;
+    only.pan = 0.0;
+    only.muted = false;
+    only.soloed = false;
+    single.masterGainDb = 0.0;
+    single.master = MasterSettings{};
+    return renderMix(single, pool, {}, cancel);
+}
+
 AudioTags makeAudioTags(const MetadataFields& m, std::string software, std::string artwork)
 {
     AudioTags tags;

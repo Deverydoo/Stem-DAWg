@@ -393,6 +393,12 @@ void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
     midi->addAction(tr("Quantise to 1/16 Notes"), this, [this] { Q_EMIT drumsToMidiRequested(16); });
     midi->addAction(tr("Quantise to 1/32 Notes"), this, [this] { Q_EMIT drumsToMidiRequested(32); });
     midi->addAction(tr("As Played"), this, [this] { Q_EMIT drumsToMidiRequested(0); });
+    QMenu* notes = menu.addMenu(tr("Notes to MIDI"));
+    notes->setToolTipsVisible(true);
+    const QString notesTip = tr("Transcribe the notes of a bass, guitar, keys, synth or vocal track to a MIDI file, on the song's beats "
+                                "when there is a drum track, and add it as a MIDI track.");
+    notes->addAction(tr("As Played"), this, [this] { Q_EMIT notesToMidiRequested(0); })->setToolTip(notesTip);
+    notes->addAction(tr("Quantise to 1/16 Notes"), this, [this] { Q_EMIT notesToMidiRequested(16); })->setToolTip(notesTip);
     menu.addSeparator();
     menu.addAction(tr("Delete Track"), this, &TrackHeader::deleteRequested);
     menu.exec(event->globalPos());
@@ -482,6 +488,7 @@ void TrackPanel::setTracks(const std::vector<TrackHeaderState>& tracks)
                     [this, id](bool on, bool additive) { Q_EMIT soloToggled(id, on, additive); });
             connect(header, &TrackHeader::cleanupRequested, this, [this, id] { Q_EMIT cleanupRequested(id); });
             connect(header, &TrackHeader::drumsToMidiRequested, this, [this, id](int grid) { Q_EMIT drumsToMidiRequested(id, grid); });
+            connect(header, &TrackHeader::notesToMidiRequested, this, [this, id](int grid) { Q_EMIT notesToMidiRequested(id, grid); });
             connect(header, &TrackHeader::renameRequested, this, [this, id] { Q_EMIT renameRequested(id); });
             connect(header, &TrackHeader::deleteRequested, this, [this, id] { Q_EMIT deleteRequested(id); });
             header->show();
