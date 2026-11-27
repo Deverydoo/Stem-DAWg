@@ -86,6 +86,7 @@ daw_add_test(daw_project_tests
         project/MigrationTests.cpp
         project/ProjectStoreTests.cpp
         project/MetadataTests.cpp
+        project/MusicalTimeTests.cpp
     LIBS daw::project)
 
 daw_add_test(daw_ai_tests

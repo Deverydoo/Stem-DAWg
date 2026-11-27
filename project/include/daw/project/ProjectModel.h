@@ -260,6 +260,13 @@ struct TempoMap {
     double bpm = 120.0;
     int numerator = 4;
     int denominator = 4;
+    // The song's tracked beats (milestone 6): seconds from the project start,
+    // increasing, and the indices of the bar lines among them. Seconds, not
+    // frames, so they survive a change of project rate. Empty: the bars run
+    // at the steady tempo above. See MusicalTime.h.
+    std::vector<double> beats;
+    std::vector<std::uint32_t> downbeats;
+    std::string beatsSource; // the track they were tracked on, for display
 
     friend bool operator==(const TempoMap&, const TempoMap&) = default;
 };

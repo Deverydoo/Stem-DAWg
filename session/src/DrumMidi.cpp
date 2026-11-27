@@ -29,6 +29,12 @@ int generalMidiDrumKey(DrumKind kind) noexcept
         return 46;
     case DrumKind::Crash:
         return 49; // crash cymbal 1
+    case DrumKind::FloorTom:
+        return 41; // low floor tom
+    case DrumKind::LowTom:
+        return 45;
+    case DrumKind::HighTom:
+        return 48; // hi-mid tom
     }
     return 36;
 }

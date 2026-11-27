@@ -3,6 +3,8 @@
 
 #include <daw/session/BeatTimeline.h>
 
+#include <daw/project/MusicalTime.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -104,6 +106,27 @@ void BeatTimeline::conduct(MidiSong& song) const
         const std::int64_t length = i + 1 < barTicks.size() ? barTicks[i + 1] - barTicks[i] : barLength;
         signature(barTicks[i], length);
     }
+}
+
+BeatTrack projectBeats(const TempoMap& tempo)
+{
+    BeatTrack track;
+    if (!followsTrackedBeats(tempo))
+        return track;
+    track.beats = tempo.beats;
+    track.bpm = tempo.bpm;
+    track.beatsPerBar = std::max(1, tempo.numerator);
+    track.downbeats.assign(tempo.downbeats.begin(), tempo.downbeats.end());
+    return track;
+}
+
+void storeProjectBeats(TempoMap& tempo, const BeatTrack& beats, std::string source)
+{
+    std::vector<std::uint32_t> downbeats;
+    downbeats.reserve(beats.downbeats.size());
+    for (std::size_t d : beats.downbeats)
+        downbeats.push_back(static_cast<std::uint32_t>(d));
+    setTrackedBeats(tempo, beats.beats, std::move(downbeats), beats.beatsPerBar, std::move(source));
 }
 
 } // namespace daw

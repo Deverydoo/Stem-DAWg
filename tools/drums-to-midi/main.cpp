@@ -14,6 +14,7 @@
 #include <daw/media/AudioFileDecoder.h>
 #include <daw/media/Midi.h>
 #include <daw/media/MidiFile.h>
+#include <daw/media/WavWriter.h>
 #include <daw/session/DrumMidi.h>
 
 #include <algorithm>
@@ -55,6 +56,9 @@ Group groupOfKind(DrumKind kind)
     case DrumKind::ClosedHat:
     case DrumKind::OpenHat: return kHatG;
     case DrumKind::Crash: return kCymbalG;
+    case DrumKind::FloorTom:
+    case DrumKind::LowTom:
+    case DrumKind::HighTom: return kTomG;
     }
     return kOtherG;
 }
@@ -139,6 +143,13 @@ int main(int argc, char** argv)
         return 1;
     }
     const AudioAsset& a = **audio;
+    // --save-render=file.wav keeps the audio transcribed (a MIDI input's render).
+    if (const std::string save = option(argc, argv, "save-render"); !save.empty()) {
+        if (auto status = writeWavFile(utf8ToPath(save), a, WavSampleFormat::Float32); !status) {
+            std::fprintf(stderr, "%s\n", status.error().describe().c_str());
+            return 1;
+        }
+    }
     DrumTranscriberParams params;
     params.sensitivity = std::stof(option(argc, argv, "sensitivity", "1"));
     const auto started = std::chrono::steady_clock::now();

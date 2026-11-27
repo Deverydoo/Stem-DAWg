@@ -166,6 +166,11 @@ public:
     /// voice) to a MIDI file in the background, on the song's beats when the
     /// project has a drum track, and saves and imports it like drumsToMidi.
     void notesToMidi(const daw::TrackId& track, int grid);
+    /// Tracks the song's beats on its drum track in the background and makes
+    /// the bars follow them (one undo step).
+    void trackBeats();
+    /// The bars run at a steady tempo from 0:00 again (one undo step).
+    void clearTrackedBeats();
 
     std::int64_t playheadProjectFrames() const;
     void seekProjectFrames(std::int64_t frame);
@@ -185,6 +190,7 @@ Q_SIGNALS:
     void exportFinished(bool ok, bool warning, const QString& message, const QString& path);
     void drumsToMidiFinished(bool ok, const QString& message, const QString& path);
     void notesToMidiFinished(bool ok, const QString& message, const QString& path);
+    void beatsTracked(bool ok, const QString& message);
     void stemReportProgress(double fraction);
     /// A new report arrived, it went out of date, or it started/stopped running.
     void stemReportChanged();
@@ -211,6 +217,8 @@ private:
     void loadMediaItems(const std::vector<daw::MediaRef>& items);
     void retargetAllMedia();
     void rebuildSnapshot();
+    /// Makes the bars follow tracked beats when the project has none yet.
+    bool storeBeats(const daw::BeatTrack& beats, const QString& source, bool replace);
     void setDirty(bool dirty);
     void jobStarted();
     void jobFinished();

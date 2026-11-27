@@ -5,15 +5,14 @@
 
 // Drum transcription (milestone 6): the hits in a drum stem, by instrument.
 //
-// The stem's spectrum is reduced to quarter-octave bands and its onsets
-// (the rise of each band from one frame to the next) are decomposed by
-// non-negative matrix factorisation into a few spectral templates: kick,
-// snare, hi-hat/cymbal, plus free components that absorb what is not drums
-// (bleed from other stems). The templates start from generic shapes and
-// adapt to the song, so its own kick and snare are learned. Because the
-// decomposition is additive, hits that sound together (a kick under a hat)
-// are found together. Each instrument's activation is peak-picked into
-// hits; hi-hat and cymbal hits are told apart by how long they ring.
+// The stem's spectrum is reduced to quarter-octave bands, and its onsets
+// (the rise of each band from one frame to the next) are picked into
+// events. Templates for kick, snare, hi-hat and cymbal are learned from the
+// song's own hits, and each event is fitted as a non-negative mix of them,
+// so hits that sound together (a kick under a hat) are found together;
+// hi-hat and cymbal hits are told apart by how long they ring. Toms
+// are hits whose low tone rings far longer than the song's kicks, without
+// a snare's wires, sorted into up to three by pitch.
 
 #include <cstdint>
 #include <vector>
@@ -26,8 +25,11 @@ enum class DrumKind {
     ClosedHat,
     OpenHat,
     Crash,
+    FloorTom, // toms from low to high
+    LowTom,
+    HighTom,
 };
-inline constexpr int kDrumKindCount = 5;
+inline constexpr int kDrumKindCount = 8;
 
 const char* drumKindName(DrumKind kind) noexcept;
 

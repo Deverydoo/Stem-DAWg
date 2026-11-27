@@ -11,6 +11,7 @@
 // once lane counts grow.
 
 #include <daw/media/PeakPyramid.h>
+#include <daw/project/ProjectModel.h>
 
 #include <QColor>
 #include <QString>
@@ -40,11 +41,13 @@ class WaveformView final : public QWidget {
     Q_OBJECT
 
 public:
-    static constexpr int kRulerHeight = 26;
+    static constexpr int kRulerHeight = 40;
+    static constexpr int kBarRowHeight = 20; // bars and beats above, time below
 
     explicit WaveformView(QWidget* parent = nullptr);
 
-    void setTimeline(double projectRate, double bpm, int beatsPerBar);
+    /// The project rate and tempo; tracked beats draw the bars along them.
+    void setTimeline(double projectRate, const daw::TempoMap& tempo);
     void setLanes(std::vector<WaveformLane> lanes);
     /// Updates only the dimming of each lane (cheap; used for mute/solo).
     void setLaneAudibility(const std::vector<bool>& audible);
@@ -91,6 +94,10 @@ private:
     std::int64_t frameForX(double x) const noexcept;
     std::int64_t contentEnd() const noexcept;
     void drawRuler(class QPainter& painter);
+    void drawBarLines(class QPainter& painter, int lanesBottom);
+    /// Every how many bars a bar is labelled at this zoom (power of 2).
+    int barLabelStep() const noexcept;
+    double pixelsPerBeat() const noexcept;
     void drawClip(class QPainter& painter, const WaveformLane& lane, const WaveformClip& clip, const class QRect& laneRect);
     void seekToX(double x);
     void setSelection(std::int64_t a, std::int64_t b);
@@ -103,8 +110,7 @@ private:
     static constexpr int kMaxLaneHeight = 140;
 
     double projectRate_ = 48000.0;
-    double bpm_ = 120.0;
-    int beatsPerBar_ = 4;
+    daw::TempoMap tempo_;
     std::vector<WaveformLane> lanes_;
     std::vector<std::int64_t> markers_;
     std::int64_t playhead_ = 0;

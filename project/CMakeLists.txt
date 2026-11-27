@@ -5,6 +5,7 @@ daw_add_module(project
     SOURCES
         src/ProjectModel.cpp
         src/Metadata.cpp
+        src/MusicalTime.cpp
         src/Migrations.cpp
         src/ProjectSerializer.cpp
         src/ProjectStore.cpp

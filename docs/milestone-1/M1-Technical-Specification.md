@@ -400,7 +400,7 @@ The other five workspaces (Mixer, Piano Roll, Spectral, Reconstruction, Masterin
 
 ## 11. Testing strategy
 
-Run with `ctest --preset local-debug` (or `-C Release`). There are 276 CTest cases in 7 executables (as of M6), all generated audio (no binary fixtures):
+Run with `ctest --preset local-debug` (or `-C Release`). There are 283 CTest cases in 7 executables (as of M6), all generated audio (no binary fixtures):
 
 | Binary | Covers |
 |--------|--------|

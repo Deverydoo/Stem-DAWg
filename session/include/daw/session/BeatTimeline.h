@@ -17,9 +17,11 @@
 
 #include <daw/dsp/BeatTracker.h>
 #include <daw/media/MidiFile.h>
+#include <daw/project/ProjectModel.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace daw {
@@ -51,5 +53,11 @@ private:
     double anchor_ = 0.0;         // its time
     int leadBeats_ = 0;           // beats in the lead-in
 };
+
+/// A project's tracked beats as a BeatTrack (empty when it has none).
+BeatTrack projectBeats(const TempoMap& tempo);
+
+/// Stores tracked beats in a project's tempo (see setTrackedBeats).
+void storeProjectBeats(TempoMap& tempo, const BeatTrack& beats, std::string source);
 
 } // namespace daw

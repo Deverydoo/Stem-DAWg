@@ -118,6 +118,36 @@ TEST_CASE("Drum transcription finds each instrument where it plays", "[drums]")
     CHECK(strengths[strengths.size() / 2] < 1.5f);
 }
 
+TEST_CASE("Toms are found in fills and sorted by pitch, without taking kicks or snares", "[drums][toms]")
+{
+    const DrumGroove g = makeDrumGroove(24, 120.0, 126.0, 48000.0, 0.5, true);
+    const DrumTranscription t = transcribe(g);
+
+    const Score toms = score(found(t, {DrumKind::FloorTom, DrumKind::LowTom, DrumKind::HighTom}),
+                             truth(g, {kTestFloorTom, kTestLowTom, kTestHighTom}));
+    const Score kick = score(found(t, {DrumKind::Kick}), truth(g, {kTestKick}));
+    const Score snare = score(found(t, {DrumKind::Snare}), truth(g, {kTestSnare}));
+    INFO("toms " << toms.matched << "/" << toms.expected << " of " << toms.found << ", kick " << kick.matched << "/" << kick.expected
+                 << " of " << kick.found << ", snare " << snare.matched << "/" << snare.expected << " of " << snare.found);
+    CHECK(toms.f() >= 0.85);
+    CHECK(toms.worstOffset <= 0.015);
+    CHECK(kick.f() >= 0.95);
+    CHECK(snare.f() >= 0.8); // as without toms, a kick still booming can read as a snare (here also over a floor tom's ring)
+
+    // Each tom, matched by time, mostly comes out as its own kind.
+    const DrumKind kinds[] = {DrumKind::FloorTom, DrumKind::LowTom, DrumKind::HighTom};
+    const int codes[] = {kTestFloorTom, kTestLowTom, kTestHighTom};
+    for (int k = 0; k < 3; ++k) {
+        const Score own = score(found(t, {kinds[k]}), truth(g, {codes[k]}));
+        INFO("tom " << k << ": " << own.matched << "/" << own.expected << " as its own kind");
+        CHECK(own.matched >= static_cast<int>(0.8 * own.expected));
+    }
+
+    // A groove without toms has none.
+    const DrumTranscription plain = transcribe(makeDrumGroove(24, 120.0, 126.0));
+    CHECK(found(plain, {DrumKind::FloorTom, DrumKind::LowTom, DrumKind::HighTom}).empty());
+}
+
 TEST_CASE("Drum transcription finds nothing in silence and stays quiet on a held tone", "[drums]")
 {
     std::vector<float> silence(48000 * 5, 0.0f);

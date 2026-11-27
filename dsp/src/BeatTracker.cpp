@@ -18,12 +18,13 @@ constexpr double kPreferredBpm = 120.0;
 constexpr double kPriorWidthOctaves = 1.0;
 constexpr double kTightness = 100.0;      // how strongly beats keep the local period
 constexpr double kWindowSeconds = 8.0;    // local tempo windows (hop: half of it)
-constexpr double kLocalRange = 0.08;      // local period within +-8 % of the song's
+constexpr double kLocalRange = 0.04;      // local period within +-4 % of the song's (AI songs drift ~2 %)
+constexpr double kSparseShare = 0.25;     // a window with less onset energy than this share of the median keeps the song's period
 constexpr std::size_t kBreakBeats = 2;   // beats without kick, snare or crash that make a break
 constexpr double kSwitchCost = 6.0;      // changing the bar phase costs this much evidence
 constexpr double kReentryWeight = 6.0;   // the first hit after a break is a downbeat
 // Weight of each instrument's hits in the beat envelope (DrumKind order).
-constexpr std::array<double, kDrumKindCount> kHitWeight{1.0, 1.0, 0.25, 0.25, 0.5};
+constexpr std::array<double, kDrumKindCount> kHitWeight{1.0, 1.0, 0.25, 0.25, 0.5, 0.5, 0.5, 0.5};
 
 /// Autocorrelation of `o` at `lag` over [from, to).
 double autocorrelation(const std::vector<double>& o, int lag, std::size_t from, std::size_t to)
@@ -104,17 +105,30 @@ BeatTrack trackBeats(const DrumTranscription& t)
     // The local period per window, near the song's, interpolated per frame.
     const auto window = static_cast<std::size_t>(kWindowSeconds * fr);
     const std::size_t hop = window / 2;
-    std::vector<double> centres, periods;
+    std::vector<double> centres, energies;
+    std::vector<std::pair<std::size_t, std::size_t>> spans;
     for (std::size_t from = 0; from + window / 2 < n; from += hop) {
         const std::size_t to = std::min(n, from + window);
-        const int lo = std::max(minLag, static_cast<int>(std::floor(period * (1.0 - kLocalRange))));
-        const int hi = std::min(maxLag, static_cast<int>(std::ceil(period * (1.0 + kLocalRange))));
         double energy = 0.0;
         for (std::size_t i = from; i < to; ++i)
             energy += o[i];
         centres.push_back(0.5 * static_cast<double>(from + to));
-        // A window without onsets (a break) keeps the song's period.
-        periods.push_back(energy > 1e-9 ? bestLag(lo, hi, [&](int lag) { return autocorrelation(o, lag, from, to); }) : period);
+        energies.push_back(energy / static_cast<double>(to - from));
+        spans.emplace_back(from, to);
+    }
+    // A window with little rhythm (a sparse intro, a break) gives the
+    // autocorrelation nothing to lock on to, so it keeps the song's period.
+    std::vector<double> sorted = energies;
+    std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
+    const double sparse = sorted.empty() ? 0.0 : kSparseShare * sorted[sorted.size() / 2];
+    const int lo = std::max(minLag, static_cast<int>(std::floor(period * (1.0 - kLocalRange))));
+    const int hi = std::min(maxLag, static_cast<int>(std::ceil(period * (1.0 + kLocalRange))));
+    std::vector<double> periods;
+    for (std::size_t w = 0; w < spans.size(); ++w) {
+        const auto [from, to] = spans[w];
+        periods.push_back(energies[w] > 1e-12 && energies[w] >= sparse
+                              ? bestLag(lo, hi, [&](int lag) { return autocorrelation(o, lag, from, to); })
+                              : period);
     }
     std::vector<double> localPeriod(n, period);
     for (std::size_t i = 0; i < n; ++i) {

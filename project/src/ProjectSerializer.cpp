@@ -259,6 +259,14 @@ json projectToJson(const ProjectModel& model)
                       {"modifiedUtc", model.modifiedUtc}};
     doc["timeline"] = {{"sampleRate", model.sampleRate},
                        {"tempo", {{"bpm", model.tempo.bpm}, {"numerator", model.tempo.numerator}, {"denominator", model.tempo.denominator}}}};
+    if (!model.tempo.beats.empty()) {
+        json beats = json::array();
+        for (double b : model.tempo.beats)
+            beats.push_back(std::round(b * 1e5) / 1e5); // 10 us
+        doc["timeline"]["tempo"]["beats"] = std::move(beats);
+        doc["timeline"]["tempo"]["downbeats"] = model.tempo.downbeats;
+        doc["timeline"]["tempo"]["beatsSource"] = model.tempo.beatsSource;
+    }
     doc["transport"] = {{"playheadFrames", model.playhead}};
     doc["mixer"] = {{"masterGainDb", model.masterGainDb}};
     if (!(model.master == MasterSettings{})) {
@@ -362,6 +370,9 @@ Result<ProjectModel> projectFromJson(json doc, const MigrationRegistry& migratio
         model.tempo.bpm = tempo.value("bpm", 120.0);
         model.tempo.numerator = tempo.value("numerator", 4);
         model.tempo.denominator = tempo.value("denominator", 4);
+        model.tempo.beats = tempo.value("beats", std::vector<double>{});
+        model.tempo.downbeats = tempo.value("downbeats", std::vector<std::uint32_t>{});
+        model.tempo.beatsSource = tempo.value("beatsSource", std::string{});
 
         model.playhead = doc.value("transport", json::object()).value("playheadFrames", std::int64_t{0});
         model.masterGainDb = doc.value("mixer", json::object()).value("masterGainDb", 0.0);
@@ -452,6 +463,12 @@ Status validateProject(const ProjectModel& model)
         return fail("project sample rate must be positive");
     if (!(model.tempo.bpm > 0.0) || model.tempo.numerator <= 0 || model.tempo.denominator <= 0)
         return fail("invalid tempo or time signature");
+    for (std::size_t i = 0; i < model.tempo.beats.size(); ++i)
+        if (!std::isfinite(model.tempo.beats[i]) || (i > 0 && !(model.tempo.beats[i] > model.tempo.beats[i - 1])))
+            return fail("tracked beats must increase");
+    for (std::size_t i = 0; i < model.tempo.downbeats.size(); ++i)
+        if (model.tempo.downbeats[i] >= model.tempo.beats.size() || (i > 0 && model.tempo.downbeats[i] <= model.tempo.downbeats[i - 1]))
+            return fail("invalid bar lines in the tracked beats");
     if (model.playhead < 0)
         return fail("negative playhead");
 

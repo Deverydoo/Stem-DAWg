@@ -3,7 +3,7 @@
 M6 turns stems into MIDI you can edit, re-voice and build on. This document covers what is done so far:
 
 - **Drums to MIDI:** a drum stem becomes a General MIDI drum file (kick, snare, hi-hats, crash) that lines up with the song.
-- **Tempo and beat tracking** that follows an AI song's drifting tempo, with downbeats.
+- **Tempo and beat tracking** that follows an AI song's drifting tempo, with downbeats, kept in the project so the timeline's bars follow the song (section 6).
 - **Notes to MIDI:** a pitched stem (bass, guitars, keys, synths, voices) becomes a MIDI file of its notes, with Spotify's Basic Pitch model, on the same beats as the drums (section 5).
 - **Exact MIDI timing:** our own MIDI file reader and writer, replacing a loader that drifted.
 
@@ -44,6 +44,30 @@ Each event's amount of each instrument is a non-negative least-squares fit of th
 
 The top band's power (above 6 kHz) after each hit tells them apart. A closed hat falls more than 7 dB within 40-100 ms of its peak; an open hat does not. A crash barely falls in its first 100 ms (less than 4 dB) nor much by 400 ms (less than 8 dB). A hat played while a crash rings also seems to ring, so a clear crash, the kind its template is learned from, must also raise the top band by 6 dB; a crash struck again while ringing (a crash on every beat) only has to ring. Only ringing events may hold a cymbal in the fit at all, or its broad shape takes the hats' share.
 
+### Toms
+
+The fit above has no tom template (toms come in several pitches), so it takes a tom for a kick, a snare or both. Each hit with some low end or body is measured again with finer spectra (4096 samples, about 85 ms: the band spectrogram's 30-60 Hz bands are mostly leakage): its tone (the lowest clear peak of what rises 40-800 Hz in the first 85 ms), how much of the tone is left 160-245 ms after the hit (its ring), its wires (2-8 kHz against 40-800 Hz) and how far the tone rose with the hit (its onset). Everything is measured against the song's own kicks and snares, because kits differ by 30 dB in how long a kick rings:
+
+- **The song's kicks** (kick hits without a snare) set the ring to beat, their 25th percentile (which leaves out toms the fit took for kicks), and the kick's pitch.
+- **The song's snare** is struck at one pitch, its toms at several: among the hits holding more of a loud snare than of a loud kick, the most common pitch is the snare's, and those hits set the wires to beat. A snare-like hit within half a semitone of that pitch is never a tom.
+- **A tom** has fewer wires than the snares (2 dB less), keeps at least -45 dB of its tone, and either rings 12 dB longer than the kicks (at a pitch a whole tone or more from the kick's, else 20 dB longer) or rings at least as long as the kicks a major third or more above the kick's pitch, with 6 dB fewer wires.
+- **The same drum struck again** before its ring is measured (a roll, a double kick, a tom played twice) sounds in that window at the same pitch: such a hit takes the ring of the run's last stroke, so a kick roll stays kicks.
+- **A fill is judged by its first stroke**: toms within a ring of each other are one fill, and the fill counts only if its first stroke's tone rises at least 6 dB with the hit. A low note bleeding into the drum stem was already sounding; on the real stem this removed 92 false toms on hats over a sustained sub note. Within a fill, a stroke under a quarter of the fill's strongest is two toms beating, not a stroke.
+- **Sorting**: the toms' pitches are split into three, two or one groups (exact 1-D k-means), the most groups for which each holds a tenth of the tom hits and neighbours are a whole tone apart, and written as floor, low and high tom (GM 41, 45, 48; two groups: floor and high; one: low).
+
+Developed on six General MIDI kits (Standard, Room, Power, Electronic, TR-808, Jazz) playing grooves with tom fills, rendered through the SoundFont:
+
+| Kit | Toms | Kick | Snare |
+|---|---|---|---|
+| Standard | 0.91 | 0.76 → 0.86 | 0.68 → 0.87 |
+| Room | 0.91 | 0.89 → 0.90 | 0.72 → 0.90 |
+| Jazz | 0.94 | 0.91 → 0.93 | 0.57 → 0.85 |
+| TR-808 | 0.87 | 0.70 → 0.86 | 0.66 → 0.70 |
+| Power | 0.30 | 0.77 → 0.84 | 0.64 → 0.71 |
+| Electronic | 0.07 | 0.80 → 0.78 | 0.87 → 0.89 |
+
+(kick and snare before → after toms; before, every tom was an extra kick or snare). The power kit's toms ring shorter than its kicks; the electronic kit's are noisy, with more wires than its snare: both are left as kicks and snares rather than risk the snares. On Suno's drum MIDI rendered through the SoundFont, all 18 toms are found (F 0.78), kicks unchanged (0.97); on the real stem, kicks unchanged (0.86) and 6 toms where Suno's MIDI has none. Sorting: on the acoustic kits the floor tom comes out as floor, the high tom as high; with four toms in the kit, the middle two share the low and high groups.
+
 ### What did not work
 
 - **NMF on the whole spectrogram** (kick, snare, hat and free components, generic starting shapes): on uncompressed levels the loud low end dominates, and the factorisation split the spectrum by frequency instead of by instrument: its "kick" took 46-93 Hz, its "snare" the kick's upper body, its "hat" everything above 1 kHz.
@@ -60,13 +84,13 @@ The top band's power (above 6 kHz) after each hit tells them apart. A closed hat
 
 F-measure within 50 ms. On the real stem only the kick score means much: Suno's snare, hat and crash labels are unreliable (section 1), and listening to the transcription against the stem is the better judge. A 6:21 song transcribes in about a second.
 
-Known limits: a kick half a beat after another, still booming, can read as a snare; toms are not transcribed yet (they come out as kick or snare); a crash that decays fast reads as an open hat.
+Known limits: a kick half a beat after another, still booming, can read as a snare; a crash that decays fast reads as an open hat; a kick struck with a tom comes out as the tom only; toms that ring shorter than the kicks, or as noisy as the snare, stay kicks and snares.
 
 ## 3. Beats, bars and the MIDI file (`dsp/BeatTracker`, `session/DrumMidi`)
 
 ### Beat tracking
 
-The beats are tracked on an envelope built from the hits, weighed by instrument (kick and snare 1, crash 0.5, hats 0.25): the beat is where kicks and snares fall. With every onset weighed alike, paired offbeat hats pulled the beats half a beat off for whole sections. The song's beat period comes from the envelope's autocorrelation, weighed towards 120 BPM against octave errors, and is refined per 8-second window (within 8 %). Dynamic programming (Ellis, "Beat tracking by dynamic programming", 2007) places the beats on strong hits while the spacing stays close to the local period; each beat then moves onto the nearest hit within 35 ms. Beats more than a beat outside the drums are dropped: through silence they would be guesses.
+The beats are tracked on an envelope built from the hits, weighed by instrument (kick and snare 1, crash 0.5, hats 0.25): the beat is where kicks and snares fall. With every onset weighed alike, paired offbeat hats pulled the beats half a beat off for whole sections. The song's beat period comes from the envelope's autocorrelation, weighed towards 120 BPM against octave errors, and is refined per 8-second window, within 4 % of it (these songs drift by about 2 %). A window with less than a quarter of the song's median onset energy (a sparse intro, a break) keeps the song's period: with nothing to lock on to, its autocorrelation used to land on the edge of the range, and the intro and a break of the test song were tracked at 150-156 BPM instead of 137. Dynamic programming (Ellis, "Beat tracking by dynamic programming", 2007) places the beats on strong hits while the spacing stays close to the local period; each beat then moves onto the nearest hit within 35 ms. Beats more than a beat outside the drums are dropped: through silence they would be guesses.
 
 ### Downbeats
 
@@ -74,14 +98,14 @@ Each beat's bar position is scored by its hits: kicks and crashes on the one, sn
 
 | On the GM render of Suno's drum MIDI | Beats (F, within 70 ms) | Downbeats on the true ones |
 |---|---|---|
-| With the side stick on most beats | 0.93 | 83 % |
-| Side stick removed | 0.88 | 80 % |
+| With the side stick on most beats | 0.94 (0.93 with the local period within 8 %) | 83 % (83 %) |
+| Side stick removed | 0.94 (0.88) | 86 % (80 %) |
 
-The misses are the intro (toms only) and sparse breakdowns, where there is little to track, and a late section whose snare moves to the one and three.
+On the real stem, the local tempo (median of 8 beat gaps) now stays between 132.4 and 138.9 BPM; it reached 154 before. The misses left are the intro (toms only), where there is little to track, and a late section whose snare moves to the one and three.
 
 ### The MIDI file
 
-General MIDI, channel 10: kick 36, snare 38, closed hat 42, open hat 46, crash 49. Each hit is placed by its beat (its position between the two beats around it) and quantised within the beat: to sixteenths, thirty-seconds, or not at all. The file changes tempo on every beat, so the notes stay on the audio although the song drifts, and a DAW's bar lines fall on the song's bars. Before the first beat, a lead-in of whole beats at its own tempo keeps time 0 at time 0; the beats before the first downbeat form a pickup bar with its own time signature, and a bar a beat short or long (where the bar phase changed) gets one too. Read back through its own tempo map, the file's notes land within 5 ms of the hits for 90 % of them (GM render, quantised to sixteenths).
+General MIDI, channel 10: kick 36, snare 38, closed hat 42, open hat 46, crash 49, floor tom 41, low tom 45, high tom 48. Each hit is placed by its beat (its position between the two beats around it) and quantised within the beat: to sixteenths, thirty-seconds, or not at all. The file changes tempo on every beat, so the notes stay on the audio although the song drifts, and a DAW's bar lines fall on the song's bars. Before the first beat, a lead-in of whole beats at its own tempo keeps time 0 at time 0; the beats before the first downbeat form a pickup bar with its own time signature, and a bar a beat short or long (where the bar phase changed) gets one too. Read back through its own tempo map, the file's notes land within 5 ms of the hits for 90 % of them (GM render, quantised to sixteenths).
 
 ## 4. Our own MIDI reader and writer (`media/MidiFile`)
 
@@ -128,6 +152,8 @@ Each note becomes a note on its key, on channel 1, with the instrument chosen fr
 
 ## 6. In the app
 
+**Analysis → Track the Beats** tracks the song's beats and bars on its drum track (named like a drum stem) and keeps them in the project (`timeline.tempo.beats`, in seconds, and `downbeats`, the bar lines among them; one undo step). The timeline's ruler then shows bars and beats along the song above the time, with faint bar lines across the tracks (and beat lines when zoomed in), and the position reads bar.beat.tick along the song (`project/MusicalTime`). Bars are numbered so the bar holding 0:00 is bar 1, as in a DAW; before the first tracked beat and after the last, beats continue at the neighbouring spacing. The tempo shown is the median, marked "tracked". Without tracked beats the bars run at the project's steady tempo from 0:00, and no bar lines are drawn across the tracks, since a steady grid on a drifting song would mislead. **Analysis → Steady Tempo** forgets the tracked beats. Drums to MIDI and Notes to MIDI use the project's beats when it has them, and keep the beats they track when it has none, so the timeline, the drum file and the note files all share one tempo map.
+
 **Right-click a track name → Drums to MIDI** (quantise to 1/16 notes, to 1/32 notes, or as played), or **Analysis → Drums to MIDI** (the first track named like drums, or else the track the Clean-up panel shows). The track is rendered as it sounds (its clean-up and processed copies included) at unity gain, transcribed in the background, saved as `<track> (drums).mid` in the project's Exports folder (Documents/Stem DAWg/MIDI for an untitled project), and added as a MIDI track when a SoundFont is set, so it can be heard against the stem. The summary gives the notes per instrument, the tempo and the bars.
 
 **Right-click a track name → Notes to MIDI** (as played, or quantised to 1/16 notes), or **Analysis → Notes to MIDI** for the track the Clean-up panel shows: the track is rendered as it sounds, transcribed in the background, saved as `<track> (notes).mid` next to the drum file, and added as a MIDI track. The summary gives the notes, their range, the instrument, and whether the file follows the song's beats (and from which drum track).
@@ -136,6 +162,9 @@ Each note becomes a note on its key, on channel 1, with the instrument chosen fr
 
 ## 7. Tests
 
+- `daw_project_tests` `[tempo]`: bars and beats at a steady tempo and along tracked beats (a pickup, a tempo change, beats extrapolated before and after, a bar tracked a beat long, a time on a beat counting as that beat); the median tempo from the beats; tracked beats saved, validated (increasing, bar lines in range) and absent from older projects.
+- `daw_integration_tests` `[tempo]`: tracked beats kept in a project give the same MIDI timeline as the beats they came from.
+- `daw_dsp_tests` `[toms]`: the synthesised kit with a tom fill every fourth bar (high, low and floor toms, sixteenths): toms F >= 0.85 within 15 ms, each tom mostly as its own kind, kicks and snares kept; no toms in a groove without them.
 - `daw_dsp_tests` `[drums]`: a synthesised kit (kick, snare, closed and open hats choked by the next, crash) plays a groove whose tempo drifts from 120 to 126 BPM: kick and hats F >= 0.95 and 0.9, snare >= 0.85, every crash found, hits within 15 ms, open hats told from closed (F >= 0.8); nothing in silence or on a held tone. Beats within 30 ms for 95 %, the tempo between 120 and 126 BPM, 90 % of the downbeats on the bars.
 - `daw_media_tests` `[midifile]`: written files read back (notes, channels, velocities, tempo); 1,000 tempo changes stay exact to a microsecond; running status, velocity-0 note-offs, SMPTE time; broken and truncated files.
 - `daw_ai_tests` `[notes]`: the decoding on hand-made activations (a note from its onset to where the key stops sounding, a repeated note split at its second onset, a note without an onset found by the melodia pass, too-short notes and keys out of range dropped, onsets inferred from a jump); the model on a synthesised bass line with repeated sixteenths (F >= 0.85, starts within 10 ms median and 20 ms for 95 %) and on held chords over it (F >= 0.7); silence holds no notes.

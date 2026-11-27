@@ -14,6 +14,9 @@ inline ProjectModel makeRichProject()
     model.appVersion = "0.1.0";
     model.sampleRate = 44100.0;
     model.tempo = {133.5, 7, 8};
+    model.tempo.beats = {0.25, 0.75, 1.1875, 1.625, 2.0625};
+    model.tempo.downbeats = {1, 4};
+    model.tempo.beatsSource = "Drums";
     model.masterGainDb = -1.5;
     model.master = {true, -0.5, 150.0, -10.0};
     model.master.eq = true;

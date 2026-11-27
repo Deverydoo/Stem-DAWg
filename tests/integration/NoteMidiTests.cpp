@@ -176,6 +176,31 @@ std::shared_ptr<NoteTranscriber> loadTranscriber()
 
 } // namespace
 
+TEST_CASE("Tracked beats kept in a project give the same MIDI timeline", "[notes][tempo]")
+{
+    BeatTrack beats;
+    for (int i = 0; i < 40; ++i)
+        beats.beats.push_back(0.8 + 0.45 * i + 0.002 * i * i / 10.0);
+    beats.beatsPerBar = 4;
+    for (std::size_t d = 2; d < beats.beats.size(); d += 4)
+        beats.downbeats.push_back(d);
+    beats.bpm = 133.3;
+
+    TempoMap tempo;
+    storeProjectBeats(tempo, beats, "Drums");
+    REQUIRE(tempo.beatsSource == "Drums");
+    REQUIRE(tempo.numerator == 4);
+    const BeatTrack back = projectBeats(tempo);
+    REQUIRE(back.beats == beats.beats);
+    REQUIRE(back.downbeats == beats.downbeats);
+
+    const BeatTimeline a(beats), b(back);
+    for (double t : {0.0, 0.81, 3.3, 12.0, 20.0})
+        REQUIRE(a.tick(t, 16) == b.tick(t, 16));
+
+    REQUIRE(projectBeats(TempoMap{}).beats.empty());
+}
+
 TEST_CASE("A bass track becomes a MIDI file on the song's beats", "[notes][onnx]")
 {
     const NotePiece piece = makeNotePiece(8, 124.0, false);

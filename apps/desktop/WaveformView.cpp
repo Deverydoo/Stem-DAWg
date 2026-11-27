@@ -5,6 +5,8 @@
 
 #include "HelpText.h"
 
+#include <daw/project/MusicalTime.h>
+
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QHelpEvent>
@@ -25,6 +27,10 @@ const QColor kText(0xc8, 0xc8, 0xc8);
 const QColor kPlayhead(0xff, 0x5a, 0x1f);
 const QColor kMarker(0xf2, 0xd0, 0x3b, 150);
 const QColor kGrid(0x33, 0x35, 0x3b);
+const QColor kBarText(0xe6, 0xe6, 0xe6);
+const QColor kBeatText(0x8a, 0x8c, 0x92);
+const QColor kBarLine(0xff, 0xff, 0xff, 22);
+const QColor kBeatLine(0xff, 0xff, 0xff, 9);
 const QColor kDefaultTrack(0xd9, 0x8a, 0x4a);
 const QColor kSelectionFill(0x9f, 0xc4, 0xff, 38);
 const QColor kSelectionEdge(0x9f, 0xc4, 0xff, 170);
@@ -53,7 +59,9 @@ bool WaveformView::event(QEvent* event)
         auto* help = static_cast<QHelpEvent*>(event);
         if (help->pos().y() < kRulerHeight) {
             QToolTip::showText(help->globalPos(),
-                               helpTip(tr("Timeline"), tr("Time in minutes:seconds. Click or drag here to move the playhead.\n"
+                               helpTip(tr("Timeline"), tr("Bars and beats above, time in minutes:seconds below. The bars follow the song's\n"
+                                                          "tracked beats (Analysis > Track the Beats), else a steady tempo from 0:00.\n"
+                                                          "Click or drag here to move the playhead.\n"
                                                           "Drag across the tracks to select a stretch of time (Shift+click extends it,\n"
                                                           "Esc clears it): Learn Noise and Detect then measure only the selection.\n"
                                                           "Ctrl+wheel zooms, Shift+wheel scrolls sideways, wheel scrolls tracks.")),
@@ -67,12 +75,26 @@ bool WaveformView::event(QEvent* event)
     return QWidget::event(event);
 }
 
-void WaveformView::setTimeline(double projectRate, double bpm, int beatsPerBar)
+void WaveformView::setTimeline(double projectRate, const daw::TempoMap& tempo)
 {
     projectRate_ = projectRate > 0.0 ? projectRate : 48000.0;
-    bpm_ = bpm;
-    beatsPerBar_ = beatsPerBar;
+    tempo_ = tempo;
     update();
+}
+
+double WaveformView::pixelsPerBeat() const noexcept
+{
+    const double beatSeconds = 60.0 / (tempo_.bpm > 0.0 ? tempo_.bpm : 120.0);
+    return beatSeconds * projectRate_ / framesPerPixel_;
+}
+
+int WaveformView::barLabelStep() const noexcept
+{
+    const double barPixels = pixelsPerBeat() * std::max(1, tempo_.numerator);
+    int step = 1;
+    while (step < 1024 && step * barPixels < 44.0)
+        step *= 2;
+    return step;
 }
 
 void WaveformView::setLanes(std::vector<WaveformLane> lanes)
@@ -225,6 +247,7 @@ void WaveformView::paintEvent(QPaintEvent*)
 
     // Analysis markers (transient candidates).
     const int lanesBottom = std::min(height(), kRulerHeight + static_cast<int>(lanes_.size()) * lane - scrollY_);
+    drawBarLines(painter, lanesBottom);
     drawSelection(painter, lanesBottom);
     painter.setPen(QPen(kMarker, 1));
     for (std::int64_t marker : markers_) {
@@ -273,27 +296,69 @@ void WaveformView::drawRuler(QPainter& painter)
     const QRect ruler(0, 0, width(), kRulerHeight);
     painter.fillRect(ruler, kRuler);
     painter.setPen(kGrid);
+    painter.drawLine(0, kBarRowHeight, width(), kBarRowHeight);
     painter.drawLine(0, kRulerHeight - 1, width(), kRulerHeight - 1);
 
+    // Bars and beats, labelled every `step` bars at this zoom.
+    const double from = viewStart_ / projectRate_;
+    const double to = (viewStart_ + width() * framesPerPixel_) / projectRate_;
+    const int step = barLabelStep();
+    const double beatPixels = pixelsPerBeat();
+    const bool tracked = daw::followsTrackedBeats(tempo_);
+    for (const daw::BeatMark& mark : daw::beatMarks(tempo_, std::max(0.0, from), to)) {
+        const double x = xForFrame(mark.seconds * projectRate_);
+        if (mark.beat == 1 && (mark.bar - 1) % step == 0) {
+            painter.setPen(tracked ? kBarText : kBeatText);
+            painter.drawLine(QPointF(x, 3), QPointF(x, kBarRowHeight));
+            painter.drawText(QPointF(x + 3, kBarRowHeight - 6), QString::number(mark.bar));
+        } else if (step == 1 && beatPixels >= 10.0) {
+            painter.setPen(kBeatText);
+            painter.drawLine(QPointF(x, kBarRowHeight - 5), QPointF(x, kBarRowHeight));
+            if (beatPixels >= 40.0)
+                painter.drawText(QPointF(x + 3, kBarRowHeight - 6), QStringLiteral("%1.%2").arg(mark.bar).arg(mark.beat));
+        }
+    }
+
+    // Time.
     static constexpr double steps[] = {0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600};
     const double secondsPerPixel = framesPerPixel_ / projectRate_;
-    double step = steps[std::size(steps) - 1];
+    double timeStep = steps[std::size(steps) - 1];
     for (double s : steps)
         if (s / secondsPerPixel >= 90.0) {
-            step = s;
+            timeStep = s;
             break;
         }
 
-    const double firstSecond = std::floor((viewStart_ / projectRate_) / step) * step;
+    const double firstSecond = std::floor(from / timeStep) * timeStep;
     painter.setPen(kText);
-    for (double t = firstSecond;; t += step) {
+    for (double t = firstSecond;; t += timeStep) {
         const double x = xForFrame(t * projectRate_);
         if (x > width())
             break;
         if (x < 0.0)
             continue;
-        painter.drawLine(QPointF(x, kRulerHeight - 8), QPointF(x, kRulerHeight));
-        painter.drawText(QPointF(x + 3, kRulerHeight - 10), formatTime(t, step));
+        painter.drawLine(QPointF(x, kRulerHeight - 7), QPointF(x, kRulerHeight));
+        painter.drawText(QPointF(x + 3, kRulerHeight - 6), formatTime(t, timeStep));
+    }
+}
+
+void WaveformView::drawBarLines(QPainter& painter, int lanesBottom)
+{
+    // Only along tracked beats: a steady grid on a song that drifts would
+    // mislead.
+    if (!daw::followsTrackedBeats(tempo_) || lanesBottom <= kRulerHeight)
+        return;
+    const double from = viewStart_ / projectRate_;
+    const double to = (viewStart_ + width() * framesPerPixel_) / projectRate_;
+    const int step = barLabelStep();
+    const bool beats = step == 1 && pixelsPerBeat() >= 24.0;
+    for (const daw::BeatMark& mark : daw::beatMarks(tempo_, std::max(0.0, from), to)) {
+        const bool bar = mark.beat == 1 && (mark.bar - 1) % step == 0;
+        if (!bar && !beats)
+            continue;
+        const double x = xForFrame(mark.seconds * projectRate_);
+        painter.setPen(bar ? kBarLine : kBeatLine);
+        painter.drawLine(QPointF(x, kRulerHeight), QPointF(x, lanesBottom));
     }
 }
 

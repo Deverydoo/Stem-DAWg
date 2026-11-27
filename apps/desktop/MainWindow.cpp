@@ -28,6 +28,7 @@
 #include <daw/core/Logger.h>
 #include <daw/media/AudioFileDecoder.h>
 #include <daw/media/Midi.h>
+#include <daw/project/MusicalTime.h>
 #include <daw/session/SnapshotBuilder.h>
 
 #include <QAction>
@@ -63,20 +64,18 @@
 
 namespace {
 
-QString formatPosition(std::int64_t frames, double rate, double bpm, int beatsPerBar)
+QString formatPosition(std::int64_t frames, double rate, const daw::TempoMap& tempo)
 {
     const double seconds = rate > 0.0 ? static_cast<double>(frames) / rate : 0.0;
     const int minutes = static_cast<int>(seconds / 60.0);
     const double rest = seconds - minutes * 60.0;
-    const double beats = seconds * bpm / 60.0;
-    const auto bar = static_cast<long long>(beats / beatsPerBar) + 1;
-    const auto beat = static_cast<long long>(std::fmod(beats, beatsPerBar)) + 1;
-    const auto ticks = static_cast<int>((beats - std::floor(beats)) * 960.0);
+    const daw::MusicalPosition at = daw::musicalPosition(tempo, seconds);
+    const auto ticks = std::min(959, static_cast<int>(at.fraction * 960.0));
     return QStringLiteral("%1:%2   %3.%4.%5")
         .arg(minutes, 2, 10, QLatin1Char('0'))
         .arg(rest, 6, 'f', 3, QLatin1Char('0'))
-        .arg(bar)
-        .arg(beat)
+        .arg(at.bar)
+        .arg(at.beat)
         .arg(ticks, 3, 10, QLatin1Char('0'));
 }
 
@@ -453,6 +452,12 @@ void MainWindow::buildMenus()
                                 "MIDI file, on the song's beats when there is a drum track. For any track, right-click its name.");
     notesMenu->addAction(tr("&As Played"), this, [notesToMidi] { notesToMidi(0); })->setToolTip(notesTip);
     notesMenu->addAction(tr("Quantise to 1/&16 Notes"), this, [notesToMidi] { notesToMidi(16); })->setToolTip(notesTip);
+    analysis->addSeparator();
+    analysis->addAction(tr("&Track the Beats"), this, [this] { project_->trackBeats(); })
+        ->setToolTip(tr("Find the song's beats and bars on its drum track, so the timeline's bars and the position follow the "
+                        "song's drifting tempo. Drums to MIDI and Notes to MIDI then use these beats."));
+    analysis->addAction(tr("Steady Te&mpo"), this, [this] { project_->clearTrackedBeats(); })
+        ->setToolTip(tr("Forget the tracked beats: the bars run at a steady tempo from 0:00 again."));
     analysis->setToolTipsVisible(true);
 
     auto* cleanup = menuBar()->addMenu(tr("&Clean-up"));
@@ -620,7 +625,7 @@ void MainWindow::connectSignals()
         if (end > start && rate > 0.0)
             statusBar()->showMessage(tr("Selected %1 s from %2. Learn Noise and Detect now measure the selection; Esc clears it.")
                                          .arg(static_cast<double>(end - start) / rate, 0, 'f', 2)
-                                         .arg(formatPosition(start, rate, project_->model().tempo.bpm, project_->model().tempo.numerator)),
+                                         .arg(formatPosition(start, rate, project_->model().tempo)),
                                      6000);
     });
     connect(waveform_, &WaveformView::laneClicked, this, [this](int lane) {
@@ -675,6 +680,12 @@ void MainWindow::connectSignals()
     };
     connect(project_.get(), &ProjectController::drumsToMidiFinished, this, midiResult(tr("Drums to MIDI")));
     connect(project_.get(), &ProjectController::notesToMidiFinished, this, midiResult(tr("Notes to MIDI")));
+    connect(project_.get(), &ProjectController::beatsTracked, this, [this](bool ok, const QString& message) {
+        if (ok)
+            QMessageBox::information(this, tr("Track the Beats"), message);
+        else
+            QMessageBox::warning(this, tr("Track the Beats"), message);
+    });
     connect(trackPanel_, &TrackPanel::deleteRequested, this,
             [this](const QString& id) { project_->removeTrack(daw::TrackId(id.toStdString())); });
     connect(project_.get(), &ProjectController::undoChanged, this, &MainWindow::refreshUndoActions);
@@ -762,7 +773,7 @@ void MainWindow::onTick()
     const auto& model = project_->model();
     const std::int64_t playhead = project_->playheadProjectFrames();
     waveform_->setPlayhead(playhead);
-    timeLabel_->setText(formatPosition(playhead, model.sampleRate, model.tempo.bpm, model.tempo.numerator));
+    timeLabel_->setText(formatPosition(playhead, model.sampleRate, model.tempo));
 
     loudness_->setReading(engine_->engine().loudness(), transport.playing);
 
@@ -804,10 +815,12 @@ void MainWindow::refreshLanes()
         }
         lanes.push_back(std::move(lane));
     }
-    waveform_->setTimeline(model.sampleRate, model.tempo.bpm, model.tempo.numerator);
+    waveform_->setTimeline(model.sampleRate, model.tempo);
     waveform_->setLanes(std::move(lanes));
-    trackPanel_->setTopText(
-        tr("%1 BPM   %2/%3").arg(model.tempo.bpm, 0, 'f', 1).arg(model.tempo.numerator).arg(model.tempo.denominator));
+    // Tracked beats: the median tempo, marked as following the song.
+    trackPanel_->setTopText(daw::followsTrackedBeats(model.tempo)
+                                ? tr("~%1 BPM   %2/%3   tracked").arg(model.tempo.bpm, 0, 'f', 1).arg(model.tempo.numerator).arg(model.tempo.denominator)
+                                : tr("%1 BPM   %2/%3").arg(model.tempo.bpm, 0, 'f', 1).arg(model.tempo.numerator).arg(model.tempo.denominator));
     refreshMixer();
 }
 

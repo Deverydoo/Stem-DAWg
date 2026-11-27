@@ -55,6 +55,22 @@ void addSnare(std::vector<float>& out, std::int64_t at, double rate, float gain,
     }
 }
 
+void addTom(std::vector<float>& out, std::int64_t at, double rate, float gain, double hz, Noise& noise)
+{
+    double phase = 0.0, phase2 = 0.0;
+    const auto length = static_cast<std::int64_t>(1.5 * rate);
+    for (std::int64_t i = 0; i < length && at + i < static_cast<std::int64_t>(out.size()); ++i) {
+        const double t = i / rate;
+        const double f = hz * (1.0 + 0.12 * std::exp(-t / 0.03));
+        phase += 2.0 * std::numbers::pi * f / rate;
+        phase2 += 2.0 * std::numbers::pi * 1.59 * f / rate;
+        double v = 0.7 * std::sin(phase) * std::exp(-t / 0.35) + 0.2 * std::sin(phase2) * std::exp(-t / 0.12);
+        if (t < 0.002)
+            v += 0.25 * noise.next();
+        out[static_cast<std::size_t>(at + i)] += static_cast<float>(gain * v);
+    }
+}
+
 void addHat(std::vector<float>& out, std::int64_t at, std::int64_t until, double rate, float gain, double decay, double brightness,
             Noise& noise)
 {
@@ -74,7 +90,7 @@ void addHat(std::vector<float>& out, std::int64_t at, std::int64_t until, double
 
 } // namespace
 
-DrumGroove makeDrumGroove(int bars, double startBpm, double endBpm, double rate, double startSeconds)
+DrumGroove makeDrumGroove(int bars, double startBpm, double endBpm, double rate, double startSeconds, bool fills)
 {
     DrumGroove g;
     // Beat times with a linearly moving tempo.
@@ -98,12 +114,22 @@ DrumGroove makeDrumGroove(int bars, double startBpm, double endBpm, double rate,
     };
     for (int bar = 0; bar < bars; ++bar) {
         const int b = bar * 4;
+        const bool fill = fills && bar % 4 == 3;
         if (bar % 8 == 0)
             g.hits.push_back({at(b, 0.0), kTestCrash});
         g.hits.push_back({at(b, 0.0), kTestKick});
+        g.hits.push_back({at(b + 1, 0.0), kTestSnare});
+        if (fill) {
+            static constexpr int kFill[] = {kTestHighTom, kTestHighTom, kTestLowTom, kTestLowTom,
+                                            kTestFloorTom, kTestFloorTom, kTestFloorTom, kTestFloorTom};
+            for (int s = 0; s < 8; ++s)
+                g.hits.push_back({at(b + 2 + s / 4, (s % 4) * 0.25), kFill[s]});
+            for (int eighth = 0; eighth < 4; ++eighth)
+                g.hits.push_back({at(b + eighth / 2, (eighth % 2) * 0.5), kTestClosedHat});
+            continue;
+        }
         g.hits.push_back({at(b + 2, 0.0), kTestKick});
         g.hits.push_back({at(b + 2, 0.5), kTestKick});
-        g.hits.push_back({at(b + 1, 0.0), kTestSnare});
         g.hits.push_back({at(b + 3, 0.0), kTestSnare});
         for (int eighth = 0; eighth < 8; ++eighth)
             g.hits.push_back({at(b + eighth / 2, (eighth % 2) * 0.5), eighth == 7 ? kTestOpenHat : kTestClosedHat});
@@ -138,6 +164,15 @@ DrumGroove makeDrumGroove(int bars, double startBpm, double endBpm, double rate,
             addHat(mono, start, until, rate, 0.25f * gain, 0.25, 0.8, noise);
             break;
         }
+        case kTestFloorTom:
+            addTom(mono, start, rate, gain, 82.0, noise);
+            break;
+        case kTestLowTom:
+            addTom(mono, start, rate, gain, 123.0, noise);
+            break;
+        case kTestHighTom:
+            addTom(mono, start, rate, gain, 165.0, noise);
+            break;
         default:
             addHat(mono, start, static_cast<std::int64_t>(mono.size()), rate, 0.3f * gain, 1.2, 0.4, noise);
             break;
