@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(StemDAWg
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "Stem DAWg - music cleaner and mastering tool for AI-generated stems and home recordings"
     LANGUAGES C CXX)
 
