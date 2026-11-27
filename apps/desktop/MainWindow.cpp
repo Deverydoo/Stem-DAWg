@@ -79,6 +79,31 @@ QString formatPosition(std::int64_t frames, double rate, const daw::TempoMap& te
         .arg(ticks, 3, 10, QLatin1Char('0'));
 }
 
+/// A selection's length: in seconds, plus whole bars or beats when it spans
+/// them exactly along tracked beats (as a snapped selection does).
+QString describeLength(std::int64_t start, std::int64_t end, double rate, const daw::TempoMap& tempo)
+{
+    const double from = static_cast<double>(start) / rate;
+    const double to = static_cast<double>(end) / rate;
+    const QString seconds = QCoreApplication::translate("MainWindow", "%1 s").arg(to - from, 0, 'f', 2);
+    if (!daw::followsTrackedBeats(tempo))
+        return seconds;
+    const double beats = daw::beatIndexAt(tempo, to) - daw::beatIndexAt(tempo, from);
+    const double whole = std::round(beats);
+    // On a beat to within a millisecond's worth (frames round the snapped times).
+    const double onBeat = 0.001 / (60.0 / std::max(1.0, tempo.bpm));
+    if (whole < 1.0 || std::abs(beats - whole) > onBeat)
+        return seconds;
+    const daw::MusicalPosition a = daw::musicalPosition(tempo, from + 0.0005);
+    const daw::MusicalPosition b = daw::musicalPosition(tempo, to + 0.0005);
+    const auto count = [&](long long n, const char* one, const char* many) {
+        return QCoreApplication::translate("MainWindow", n == 1 ? one : many).arg(n).arg(seconds);
+    };
+    if (a.beat == 1 && b.beat == 1 && a.fraction < 0.01 && b.fraction < 0.01 && b.bar > a.bar)
+        return count(b.bar - a.bar, "%1 bar (%2)", "%1 bars (%2)");
+    return count(static_cast<long long>(whole), "%1 beat (%2)", "%1 beats (%2)");
+}
+
 enum class Glyph { Play, Pause, Stop, ToStart };
 
 QIcon transportIcon(Glyph glyph)
@@ -501,6 +526,16 @@ void MainWindow::buildMenus()
         waveform_->setSplitChannels(on);
         QSettings().setValue(QStringLiteral("view/splitChannels"), on);
     });
+    auto* snap = view->addAction(tr("Snap to &Beats"));
+    snap->setToolTip(tr("With tracked beats (Analysis > Track the Beats), a selection's ends snap to the beats, or to bars when "
+                        "zoomed out. Hold Alt while dragging to select freely."));
+    snap->setCheckable(true);
+    snap->setChecked(QSettings().value(QStringLiteral("view/snapToBeats"), true).toBool());
+    waveform_->setSnapToBeats(snap->isChecked());
+    connect(snap, &QAction::toggled, this, [this](bool on) {
+        waveform_->setSnapToBeats(on);
+        QSettings().setValue(QStringLiteral("view/snapToBeats"), on);
+    });
 
     auto* help = menuBar()->addMenu(tr("&Help"));
     help->setToolTipsVisible(true);
@@ -623,8 +658,8 @@ void MainWindow::connectSignals()
         cleanupPanel_->setSelectionActive(end > start);
         const double rate = project_->model().sampleRate;
         if (end > start && rate > 0.0)
-            statusBar()->showMessage(tr("Selected %1 s from %2. Learn Noise and Detect now measure the selection; Esc clears it.")
-                                         .arg(static_cast<double>(end - start) / rate, 0, 'f', 2)
+            statusBar()->showMessage(tr("Selected %1 from %2. Learn Noise and Detect now measure the selection; Esc clears it.")
+                                         .arg(describeLength(start, end, rate, project_->model().tempo))
                                          .arg(formatPosition(start, rate, project_->model().tempo)),
                                      6000);
     });

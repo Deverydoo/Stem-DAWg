@@ -5,7 +5,9 @@
 
 // Arrangement-style waveform display: read-only lanes, ruler, playhead,
 // analysis markers, click-to-seek, zoom/scroll, and a time selection (drag
-// across the lanes; Shift+click extends it, Esc clears it). Draws from peak
+// across the lanes; Shift+click extends it, Esc clears it). With tracked
+// beats the selection's ends snap to the beats, or to bars when zoomed out;
+// Alt held while dragging selects freely. Draws from peak
 // pyramids only, so cost is independent of file length. Track headers live in
 // TrackPanel, which follows laneLayoutChanged. GPU rendering (QRhi) is planned
 // once lane counts grow.
@@ -55,6 +57,8 @@ public:
     void setMarkers(std::vector<std::int64_t> projectFrames);
     /// true: one band per channel; false: channels combined into one band.
     void setSplitChannels(bool split);
+    /// Whether selections snap to the tracked beats (no effect without them).
+    void setSnapToBeats(bool snap);
     void zoomToFit();
 
     int laneHeight() const noexcept;
@@ -101,6 +105,9 @@ private:
     void drawClip(class QPainter& painter, const WaveformLane& lane, const WaveformClip& clip, const class QRect& laneRect);
     void seekToX(double x);
     void setSelection(std::int64_t a, std::int64_t b);
+    /// The frame a selection end at `frame` snaps to (itself when snapping is
+    /// off, Alt is held, or there are no tracked beats).
+    std::int64_t snapped(std::int64_t frame, Qt::KeyboardModifiers modifiers) const;
     void drawSelection(class QPainter& painter, int lanesBottom);
     void updateVerticalLayout();
 
@@ -108,6 +115,7 @@ private:
 
     static constexpr int kMinLaneHeight = 72;
     static constexpr int kMaxLaneHeight = 140;
+    static constexpr double kSnapPixels = 12.0; // the finest grid snapped to, on screen
 
     double projectRate_ = 48000.0;
     daw::TempoMap tempo_;
@@ -117,6 +125,8 @@ private:
     std::int64_t selectionStart_ = 0;
     std::int64_t selectionEnd_ = 0;
     std::int64_t dragAnchor_ = 0; // the fixed end while selecting
+    bool snapAnchor_ = false;     // the anchor is a click point, snapped with the other end
+    bool snap_ = true;
     double pressX_ = 0.0;
     Drag drag_ = Drag::None;
     double framesPerPixel_ = 512.0;

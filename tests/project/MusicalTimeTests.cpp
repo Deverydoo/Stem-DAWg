@@ -114,6 +114,32 @@ TEST_CASE("A bar tracked a beat long keeps its extra beat", "[project][tempo]")
     REQUIRE(musicalPosition(tempo, 4.5).bar == 3);
 }
 
+TEST_CASE("Selections snap to the nearest beat or bar line", "[project][tempo]")
+{
+    // Bar 2 starts at 1.5 s, bar 3 at 3.5 s, bar 4 at 5.4 s, bar 5 at 7.0 s;
+    // bar 1 (holding 0:00) at -0.5 s.
+    const TempoMap tempo = trackedTempo();
+    CHECK(snapToGrid(tempo, 1.7) == Approx(1.5));
+    CHECK(snapToGrid(tempo, 1.8) == Approx(2.0));
+    CHECK(snapToGrid(tempo, 5.55) == Approx(5.4)); // the beats closer together
+    CHECK(snapToGrid(tempo, 5.65) == Approx(5.8));
+    CHECK(snapToGrid(tempo, 9.0) == Approx(9.0)); // past the last beat, at its spacing
+    CHECK(snapToGrid(tempo, 0.3) == Approx(0.5)); // before the first, likewise
+
+    CHECK(snapToGrid(tempo, 2.4, 1) == Approx(1.5));
+    CHECK(snapToGrid(tempo, 2.6, 1) == Approx(3.5));
+    CHECK(snapToGrid(tempo, 5.0, 1) == Approx(5.4));
+    // Every other bar from bar 1: bars 1, 3, 5.
+    CHECK(snapToGrid(tempo, 5.0, 2) == Approx(3.5));
+    CHECK(snapToGrid(tempo, 5.4, 2) == Approx(7.0));
+    CHECK(snapToGrid(tempo, 1.0, 2) == Approx(-0.5));
+
+    TempoMap steady; // 120 BPM, 4/4 from 0:00
+    CHECK(snapToGrid(steady, 1.3) == Approx(1.5));
+    CHECK(snapToGrid(steady, 0.9, 1) == Approx(0.0));
+    CHECK(snapToGrid(steady, 1.3, 1) == Approx(2.0));
+}
+
 TEST_CASE("Projects keep and validate their tracked beats", "[project][tempo][serialize]")
 {
     ProjectModel model = makeEmptyProject("Beats");

@@ -106,6 +106,32 @@ std::vector<BeatMark> beatMarks(const TempoMap& tempo, double from, double to, s
     return marks;
 }
 
+double snapToGrid(const TempoMap& tempo, double seconds, int bars)
+{
+    const double index = beatIndexAt(tempo, seconds);
+    if (bars <= 0)
+        return secondsAtBeat(tempo, std::round(index));
+    // Look at the whole beats around the time (tracked bars can run a beat
+    // long or short) and take the nearest bar line on the grid.
+    const auto origin = rawBar(tempo, static_cast<long long>(std::floor(beatIndexAt(tempo, 0.0) + kOnBeat))).first;
+    const long long span = static_cast<long long>(barLength(tempo) + 2) * bars + 2;
+    const auto centre = static_cast<long long>(std::round(index));
+    double best = seconds;
+    double bestDistance = -1.0;
+    for (long long n = centre - span; n <= centre + span; ++n) {
+        const auto [bar, beat] = rawBar(tempo, n);
+        const long long fromOne = bar - origin; // 0 for bar 1
+        if (beat != 0 || ((fromOne % bars) + bars) % bars != 0)
+            continue;
+        const double at = secondsAtBeat(tempo, static_cast<double>(n));
+        if (bestDistance < 0.0 || std::abs(at - seconds) < bestDistance) {
+            best = at;
+            bestDistance = std::abs(at - seconds);
+        }
+    }
+    return best;
+}
+
 void setTrackedBeats(TempoMap& tempo, std::vector<double> beats, std::vector<std::uint32_t> downbeats, int beatsPerBar,
                      std::string source)
 {

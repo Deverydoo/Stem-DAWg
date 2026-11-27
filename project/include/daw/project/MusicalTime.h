@@ -49,6 +49,11 @@ MusicalPosition musicalPosition(const TempoMap& tempo, double seconds);
 /// Every whole beat in [from, to], in order (at most `limit`).
 std::vector<BeatMark> beatMarks(const TempoMap& tempo, double from, double to, std::size_t limit = 100000);
 
+/// The grid line nearest a time: with `bars` 0, the nearest whole beat;
+/// otherwise the nearest bar line among bars 1, 1 + bars, 1 + 2 bars...
+/// (every bar for 1, every other bar for 2), counted as musicalPosition does.
+double snapToGrid(const TempoMap& tempo, double seconds, int bars = 0);
+
 /// Sets the tempo to tracked beats (seconds, increasing; bar-line indices
 /// into them): bpm becomes their median tempo, numerator the bar length.
 /// Fewer than two beats clears the tracked beats and keeps the steady tempo.

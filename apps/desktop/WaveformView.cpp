@@ -64,6 +64,8 @@ bool WaveformView::event(QEvent* event)
                                                           "Click or drag here to move the playhead.\n"
                                                           "Drag across the tracks to select a stretch of time (Shift+click extends it,\n"
                                                           "Esc clears it): Learn Noise and Detect then measure only the selection.\n"
+                                                          "With tracked beats the selection snaps to beats, or to bars when zoomed out;\n"
+                                                          "hold Alt while dragging to select freely (View > Snap to Beats turns it off).\n"
                                                           "Ctrl+wheel zooms, Shift+wheel scrolls sideways, wheel scrolls tracks.")),
                                this);
         } else {
@@ -458,6 +460,28 @@ void WaveformView::setSelection(std::int64_t a, std::int64_t b)
     Q_EMIT selectionChanged(selectionStart_, selectionEnd_);
 }
 
+void WaveformView::setSnapToBeats(bool snap)
+{
+    snap_ = snap;
+}
+
+std::int64_t WaveformView::snapped(std::int64_t frame, Qt::KeyboardModifiers modifiers) const
+{
+    if (!snap_ || (modifiers & Qt::AltModifier) || !daw::followsTrackedBeats(tempo_))
+        return frame;
+    // Beats when they are far enough apart on screen, else every bar, every
+    // other bar, every fourth...
+    int bars = 0;
+    if (pixelsPerBeat() < kSnapPixels) {
+        const double barPixels = pixelsPerBeat() * std::max(1, tempo_.numerator);
+        bars = 1;
+        while (bars < 1024 && bars * barPixels < kSnapPixels)
+            bars *= 2;
+    }
+    const double seconds = daw::snapToGrid(tempo_, static_cast<double>(frame) / projectRate_, bars);
+    return std::max<std::int64_t>(0, std::llround(seconds * projectRate_));
+}
+
 void WaveformView::clearSelection()
 {
     if (!hasSelection())
@@ -482,16 +506,19 @@ void WaveformView::mousePressEvent(QMouseEvent* event)
     const std::int64_t frame = frameForX(pos.x());
     if (event->modifiers() & Qt::ShiftModifier) {
         // Extend: keep the selection end farther from the click (or the playhead).
+        snapAnchor_ = !hasSelection();
         if (hasSelection())
             dragAnchor_ = frame - selectionStart_ < selectionEnd_ - frame ? selectionEnd_ : selectionStart_;
         else
             dragAnchor_ = playhead_;
         drag_ = Drag::Select;
-        setSelection(dragAnchor_, frame);
+        const auto mods = event->modifiers();
+        setSelection(snapAnchor_ ? snapped(dragAnchor_, mods) : dragAnchor_, snapped(frame, mods));
         return;
     }
     // A click seeks (on release); a drag past a few pixels selects.
     dragAnchor_ = frame;
+    snapAnchor_ = true;
     drag_ = Drag::Pending;
 }
 
@@ -509,9 +536,11 @@ void WaveformView::mouseMoveEvent(QMouseEvent* event)
             break;
         drag_ = Drag::Select;
         [[fallthrough]];
-    case Drag::Select:
-        setSelection(dragAnchor_, frameForX(x));
+    case Drag::Select: {
+        const auto mods = event->modifiers();
+        setSelection(snapAnchor_ ? snapped(dragAnchor_, mods) : dragAnchor_, snapped(frameForX(x), mods));
         break;
+    }
     case Drag::None:
         break;
     }
