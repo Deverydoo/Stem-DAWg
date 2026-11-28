@@ -19,3 +19,7 @@ add_executable(notes_to_midi notes-to-midi/main.cpp)
 set_target_properties(notes_to_midi PROPERTIES OUTPUT_NAME "notes-to-midi" FOLDER "tools")
 target_link_libraries(notes_to_midi PRIVATE daw::session daw::compile_options)
 daw_copy_runtime_dlls(notes_to_midi)
+
+add_executable(track_beats track-beats/main.cpp)
+set_target_properties(track_beats PROPERTIES OUTPUT_NAME "track-beats" FOLDER "tools")
+target_link_libraries(track_beats PRIVATE daw::session daw::compile_options)

@@ -474,13 +474,14 @@ void MainWindow::buildMenus()
         project_->notesToMidi(daw::TrackId(id.toStdString()), grid);
     };
     const QString notesTip = tr("Transcribe the notes of the track the Clean-up panel shows (bass, guitar, keys, synth, voice) to a "
-                                "MIDI file, on the song's beats when there is a drum track. For any track, right-click its name.");
+                                "MIDI file, on the song's beats. For any track, right-click its name.");
     notesMenu->addAction(tr("&As Played"), this, [notesToMidi] { notesToMidi(0); })->setToolTip(notesTip);
     notesMenu->addAction(tr("Quantise to 1/&16 Notes"), this, [notesToMidi] { notesToMidi(16); })->setToolTip(notesTip);
     analysis->addSeparator();
     analysis->addAction(tr("&Track the Beats"), this, [this] { project_->trackBeats(); })
-        ->setToolTip(tr("Find the song's beats and bars on its drum track, so the timeline's bars and the position follow the "
-                        "song's drifting tempo. Drums to MIDI and Notes to MIDI then use these beats."));
+        ->setToolTip(tr("Find the song's beats and bars on its drum track (without one, in all its tracks played together), "
+                        "so the timeline's bars and the position follow the song's drifting tempo. Drums to MIDI and Notes "
+                        "to MIDI then use these beats."));
     analysis->addAction(tr("Steady Te&mpo"), this, [this] { project_->clearTrackedBeats(); })
         ->setToolTip(tr("Forget the tracked beats: the bars run at a steady tempo from 0:00 again."));
     analysis->setToolTipsVisible(true);

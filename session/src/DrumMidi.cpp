@@ -107,33 +107,80 @@ Result<DrumMidiResult> trackDrumsToMidi(const ProjectModel& model, const MediaPo
     return drumsToMidi(*rendered->audio, options, track->name, cancel);
 }
 
+namespace {
+
+bool isMidiTrack(const ProjectModel& model, const Track& track)
+{
+    return std::any_of(track.clips.begin(), track.clips.end(), [&](const Clip& c) {
+        const MediaRef* media = model.findMedia(c.media);
+        return media != nullptr && isMidiFile(utf8ToPath(media->path));
+    });
+}
+
+} // namespace
+
 std::optional<TrackId> findDrumTrack(const ProjectModel& model)
 {
     for (const Track& t : model.tracks) {
         std::string name = t.name;
         std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (name.find("drum") == std::string::npos)
-            continue;
         // Not a MIDI track (such as the drums transcribed from this one).
-        const bool midi = std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) {
-            const MediaRef* media = model.findMedia(c.media);
-            return media != nullptr && isMidiFile(utf8ToPath(media->path));
-        });
-        if (!midi)
+        if (name.find("drum") != std::string::npos && !isMidiTrack(model, t))
             return t.id;
     }
     return std::nullopt;
 }
 
+BeatSource songBeatSource(const ProjectModel& model)
+{
+    BeatSource source;
+    if (const auto drums = findDrumTrack(model)) {
+        source.drums = drums;
+        source.name = model.findTrack(*drums)->name;
+        return source;
+    }
+    for (const Track& t : model.tracks)
+        if (!t.clips.empty() && !isMidiTrack(model, t))
+            source.tracks.push_back(t.id);
+    if (source.tracks.size() == 1)
+        source.name = model.findTrack(source.tracks.front())->name;
+    else if (!source.tracks.empty())
+        source.name = "the mix";
+    return source;
+}
+
 Result<BeatTrack> songBeats(const ProjectModel& model, const MediaPool& pool, const CancellationToken& cancel)
 {
-    const auto drums = findDrumTrack(model);
-    if (!drums)
-        return makeError(ErrorCode::NotFound, "no drum track to find the beats on");
-    auto result = trackDrumsToMidi(model, pool, *drums, {}, cancel);
-    if (!result)
-        return result.error();
-    return std::move(result->beats);
+    const BeatSource source = songBeatSource(model);
+    if (source.drums) {
+        auto result = trackDrumsToMidi(model, pool, *source.drums, {}, cancel);
+        if (!result)
+            return result.error();
+        return std::move(result->beats);
+    }
+    if (source.tracks.empty())
+        return makeError(ErrorCode::NotFound, "no audio track to find the beats in");
+    // The audio tracks played together as they sound (clean-up included),
+    // each at unity gain and centred, without the master bus.
+    ProjectModel together = model;
+    together.tracks.clear();
+    for (const TrackId& id : source.tracks) {
+        Track t = *model.findTrack(id);
+        t.gainDb = 0.0;
+        t.pan = 0.0;
+        t.muted = false;
+        t.soloed = false;
+        together.tracks.push_back(std::move(t));
+    }
+    together.masterGainDb = 0.0;
+    together.master = MasterSettings{};
+    auto rendered = renderMix(together, pool, {}, cancel);
+    if (!rendered)
+        return rendered.error();
+    if (cancel.isCancelled())
+        return makeError(ErrorCode::Cancelled, "cancelled");
+    const AudioAsset& a = *rendered->audio;
+    return trackBeatsInAudio(a.channelData(0), a.channelData(a.numChannels() > 1 ? 1 : 0), a.numFrames(), a.sampleRate);
 }
 
 } // namespace daw

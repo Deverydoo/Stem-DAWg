@@ -103,6 +103,30 @@ Each beat's bar position is scored by its hits: kicks and crashes on the one, sn
 
 On the real stem, the local tempo (median of 8 beat gaps) now stays between 132.4 and 138.9 BPM; it reached 154 before. The misses left are the intro (toms only), where there is little to track, and a late section whose snare moves to the one and three.
 
+### Without a drum stem (`trackBeatsInAudio`)
+
+A song without drums, or a full mix imported as one file, has no hits to track. The beats are then tracked on the audio itself: the level in 48 log-spaced bands (40 Hz to 12 kHz, 2048-sample Blackman-Harris frames every 10 ms, floored 80 dB under the loudest), its rises and its falls each averaged over the bands, less their 0.4-second moving average. The tracker and its tempo prior are the drums' (above); the bar lines come from the sound instead of the kick and snare.
+
+Measured on 31 Suno songs, each with its full set of stems, against the beats and bars tracked on the song's own drum stem (scored within 70 ms): every stem but drums and percussion played together (the song without its drums), and all of them (the full mix).
+
+| | Beats F | Songs >= 0.8 | Downbeats F |
+|---|---|---|---|
+| Without drums, onsets (rises) only | 0.23 | 0 of 31 | |
+| Without drums, rises + 2 x falls | **0.88** (median 0.91) | 27 of 31 | **0.71** (median 0.77) |
+| Full mix, rises only | 0.94 | 29 of 31 | |
+| Full mix, rises + 2 x falls | **0.93** (median 0.95) | 30 of 31 | **0.75** (median 0.79) |
+| Lead vocals alone, rises only / + 2 x falls | 0.58 / 0.58 | | |
+
+**Why the falls.** With onsets alone the beats came out half a beat off in nearly every song, at the right tempo. The level of the pitched stems by position in the beat shows why: in all but one song it drops right on the beat by 2-6 dB and climbs back until the next. The bass, keys and synths are ducked under the kick (sidechained) and play between the beats, so their onsets fall on the offbeats. Where the music falls is where the kick was. The falls alone gave 0.88; rises plus twice the falls fixed the hardest full mixes (0.69 → 0.86, 0.79 → 0.90) and changed nothing on vocals, which are not ducked.
+
+**Downbeats.** On the reference beats, the change in sound from the beat before to the beat after (the mean level difference per band) was largest on the downbeat in 29 of 31 songs: chords change and parts come in on the one. The level's rise was largest on it in 27; the falls (one per kick) in 4. Each beat's change, in deviations from the song's median (median absolute deviation, clipped to -3...6), is the evidence for bar position 1 against the other three, and the same Viterbi pass as for drums decides the bars, a phase change costing 16. Adding the level's rise or the change over two beats did not help. The downbeats are capped by the beats: a missed beat is a missed bar line.
+
+**Timing.** The flux peaks about 20 ms after the frame centre passes an onset (on synthesised songs whose beats are known: 19-22 ms; on the real songs, 18-21 ms behind the drum stem's beats), so the beats are moved 20 ms earlier; they now sit within 2 ms of the drum stem's on average.
+
+**A held tone.** Through a Hann window, a steady tone leaks into the bands below it, and the leakage beats with the tone's negative-frequency image from frame to frame: a 3 dB flicker that the tracker took for 21 beats. The Blackman-Harris window (sidelobes below -92 dB) leaves nothing to flicker, and an envelope that moves less than 0.01 dB per frame on average has no rhythm.
+
+In the app, **Track the Beats** uses the drum track when there is one, else all the audio tracks played together, each at unity gain (not MIDI tracks), and says so; Notes to MIDI does the same when the project has no beats yet. On a song's stems without drums and percussion (7 tracks, 4:54), the beats took 2.6 s.
+
 ### The MIDI file
 
 General MIDI, channel 10: kick 36, snare 38, closed hat 42, open hat 46, crash 49, floor tom 41, low tom 45, high tom 48. Each hit is placed by its beat (its position between the two beats around it) and quantised within the beat: to sixteenths, thirty-seconds, or not at all. The file changes tempo on every beat, so the notes stay on the audio although the song drifts, and a DAW's bar lines fall on the song's bars. Before the first beat, a lead-in of whole beats at its own tempo keeps time 0 at time 0; the beats before the first downbeat form a pickup bar with its own time signature, and a bar a beat short or long (where the bar phase changed) gets one too. Read back through its own tempo map, the file's notes land within 5 ms of the hits for 90 % of them (GM render, quantised to sixteenths).
@@ -160,7 +184,7 @@ Each note becomes a note on its key, on channel 1, with the instrument chosen fr
 
 **Right-click a track name → Notes to MIDI** (as played, or quantised to 1/16 notes), or **Analysis → Notes to MIDI** for the track the Clean-up panel shows: the track is rendered as it sounds, transcribed in the background, saved as `<track> (notes).mid` next to the drum file, and added as a MIDI track. The summary gives the notes, their range, the instrument, and whether the file follows the song's beats (and from which drum track).
 
-**`drums-to-midi <drums.wav> [--out=file.mid] [--grid=16]`** does the same from the command line, and scores a transcription: `--reference=ref.mid` (aligned per 10 s, or `--shift=ms`), or a MIDI input with `--soundfont=file.sf2`, which is rendered and transcribed back against itself. **`notes-to-midi <stem.wav> [--out=file.mid] [--beats=drums.wav] [--grid=16]`** does the same for a pitched stem, with the same scoring (`--reference`, or a MIDI input with `--soundfont`; `--onset`, `--frame`, `--min-note` override the decoding).
+**`drums-to-midi <drums.wav> [--out=file.mid] [--grid=16]`** does the same from the command line, and scores a transcription: `--reference=ref.mid` (aligned per 10 s, or `--shift=ms`), or a MIDI input with `--soundfont=file.sf2`, which is rendered and transcribed back against itself. **`notes-to-midi <stem.wav> [--out=file.mid] [--beats=drums.wav] [--grid=16]`** does the same for a pitched stem, with the same scoring (`--reference`, or a MIDI input with `--soundfont`; `--onset`, `--frame`, `--min-note` override the decoding). **`track-beats <audio.wav> [more.wav ...] [--dump=beats.txt] [--reference=beats.txt]`** tracks the beats and bars of a mix, or of several stems played together, without a drum stem, and scores them against a beats file (`drums-to-midi --dump-beats` writes one from a drum stem).
 
 ## 7. Tests
 
@@ -168,6 +192,8 @@ Each note becomes a note on its key, on channel 1, with the instrument chosen fr
 - `daw_integration_tests` `[tempo]`: tracked beats kept in a project give the same MIDI timeline as the beats they came from.
 - `daw_dsp_tests` `[toms]`: the synthesised kit with a tom fill every fourth bar (high, low and floor toms, sixteenths): toms F >= 0.85 within 15 ms, each tom mostly as its own kind, kicks and snares kept; no toms in a groove without them.
 - `daw_dsp_tests` `[drums]`: a synthesised kit (kick, snare, closed and open hats choked by the next, crash) plays a groove whose tempo drifts from 120 to 126 BPM: kick and hats F >= 0.95 and 0.9, snare >= 0.85, every crash found, hits within 15 ms, open hats told from closed (F >= 0.8); nothing in silence or on a held tone. Beats within 30 ms for 95 %, the tempo between 120 and 126 BPM, 90 % of the downbeats on the bars.
+- `daw_dsp_tests` `[beats][audio]`: beats without a drum stem. The synthesised kit as a full mix: beats within 30 ms for 95 %, 12 ms on average, 80 % of the bars. A synthesised song without drums, chords changing every bar ducked on each beat with a bass on the offbeats: the beats on the beat, not the offbeat onsets (F >= 0.9 within 40 ms, 20 ms on average), the bars on the chord changes (80 %); the same chords struck on each beat, likewise. Nothing in silence or on a held tone.
+- `daw_integration_tests` `[beats]`: without a drum track, the song's beats come from its audio tracks played together (at unity, muted or not; a MIDI track left out), within 30 ms for 95 %; with a drum track, from it alone.
 - `daw_media_tests` `[midifile]`: written files read back (notes, channels, velocities, tempo); 1,000 tempo changes stay exact to a microsecond; running status, velocity-0 note-offs, SMPTE time; broken and truncated files.
 - `daw_ai_tests` `[notes]`: the decoding on hand-made activations (a note from its onset to where the key stops sounding, a repeated note split at its second onset, a note without an onset found by the melodia pass, too-short notes and keys out of range dropped, onsets inferred from a jump); the model on a synthesised bass line with repeated sixteenths (F >= 0.85, starts within 10 ms median and 20 ms for 95 %) and on held chords over it (F >= 0.7); silence holds no notes.
 - `daw_media_tests` `[midifile]`: a track's instrument written as a program change before its notes.

@@ -24,9 +24,20 @@
 // costing as much as about three bars of evidence), so a beat gained or lost
 // across a break, where there is nothing to track, does not shift the bars
 // of the rest of the song: that bar is simply a beat short or long.
+//
+// Without a drum stem (trackBeatsInAudio: a full mix, or the pitched stems
+// of a song without drums) the envelope is the spectral flux in 48 log
+// bands, its rises (onsets) plus twice its falls. In this kind of music the
+// other parts are ducked under the kick: they fall on the beat and are
+// loudest between the beats, so onsets alone put the beats half a beat off
+// (on 31 Suno songs' pitched stems, F 0.23 with onsets alone, 0.88 with the
+// falls). The bar lines are where the sound changes most from the beat
+// before to the beat after (chords, parts coming in and out), decided beat
+// by beat as with drums.
 
 #include <daw/dsp/DrumTranscriber.h>
 
+#include <cstdint>
 #include <vector>
 
 namespace daw {
@@ -41,5 +52,10 @@ struct BeatTrack {
 /// Tracks the beats of a transcription (its onset envelope; its hits find
 /// the downbeat). Empty when there is too little to go on.
 BeatTrack trackBeats(const DrumTranscription& transcription);
+
+/// Tracks the beats of any audio, stereo (or mono: right == left): a full
+/// mix or a song's stems without drums. Empty when there is too little to
+/// go on.
+BeatTrack trackBeatsInAudio(const float* left, const float* right, std::int64_t frames, double sampleRate);
 
 } // namespace daw

@@ -1306,13 +1306,16 @@ void ProjectController::notesToMidi(const daw::TrackId& trackId, int grid)
     const QString trackName = QString::fromStdString(track->name);
     const QString path = midiFilePath(trackName, QStringLiteral("notes"));
     // The song's beats: the project's tracked beats, or else tracked on its
-    // drum track (not this track itself).
+    // drum track (not this track itself), or without one in its tracks
+    // played together.
     const daw::BeatTrack projectBeats = daw::projectBeats(model.tempo);
     const bool beatsFromProject = !projectBeats.beats.empty();
-    const auto drums = beatsFromProject ? std::nullopt : daw::findDrumTrack(model);
-    const QString drumName = beatsFromProject ? QString::fromStdString(model.tempo.beatsSource)
-                             : drums && *drums != trackId ? QString::fromStdString(model.findTrack(*drums)->name)
-                                                         : QString();
+    const daw::BeatSource source = beatsFromProject ? daw::BeatSource{} : daw::songBeatSource(model);
+    const bool findBeats = !source.empty() && source.drums != trackId;
+    const QString drumName = beatsFromProject                           ? QString::fromStdString(model.tempo.beatsSource)
+                             : !findBeats                               ? QString()
+                             : !source.drums && source.tracks.size() > 1 ? tr("the mix")
+                                                                         : QString::fromStdString(source.name);
 
     struct Output {
         std::shared_ptr<daw::NoteTranscriber> model;
@@ -1322,7 +1325,7 @@ void ProjectController::notesToMidi(const daw::TrackId& trackId, int grid)
     Q_EMIT statusMessage(tr("Transcribing the notes of %1 to MIDI...").arg(trackName));
     QPointer<ProjectController> self(this);
     runInBackground(
-        [this, self, transcriber = noteModel_, model, trackId, grid, token, path, drums, trackName, projectBeats]() mutable {
+        [this, self, transcriber = noteModel_, model, grid, token, path, findBeats, trackId, trackName, projectBeats]() mutable {
             Output out;
             if (!transcriber) {
                 auto backend = daw::createOnnxBackend({.intraOpThreads = 4});
@@ -1336,7 +1339,7 @@ void ProjectController::notesToMidi(const daw::TrackId& trackId, int grid)
             }
             out.model = transcriber;
             out.beats = projectBeats;
-            if (out.beats.beats.empty() && drums && *drums != trackId) {
+            if (out.beats.beats.empty() && findBeats) {
                 if (auto found = daw::songBeats(model, pool_, token))
                     out.beats = std::move(*found);
             }
@@ -1380,14 +1383,14 @@ void ProjectController::notesToMidi(const daw::TrackId& trackId, int grid)
             message += QStringLiteral("\n\n");
             if (r.onBeats) {
                 message += tr("On the song's beats, tracked on %1 (%2 BPM, %3 bars): the file changes tempo on every beat, so it "
-                              "stays on the song and lines up with its drum MIDI.")
+                              "stays on the song and lines up with the song's other MIDI files.")
                                .arg(drumName)
                                .arg(out.beats.bpm, 0, 'f', 1)
                                .arg(out.beats.downbeats.size());
                 if (!beatsFromProject && storeBeats(out.beats, drumName, false))
                     message += QStringLiteral(" ") + tr("The timeline's bars now follow these beats too.");
             } else
-                message += drumName.isEmpty() ? tr("No drum track to take the beats from, so the file is a steady 120 BPM with the notes "
+                message += drumName.isEmpty() ? tr("No other track to take the beats from, so the file is a steady 120 BPM with the notes "
                                                    "where they are played (its bar lines are not the song's).")
                                               : tr("Too little rhythm on %1 to take the beats from, so the file is a steady 120 BPM with "
                                                    "the notes where they are played.").arg(drumName);
@@ -1419,26 +1422,29 @@ bool ProjectController::storeBeats(const daw::BeatTrack& beats, const QString& s
 
 void ProjectController::trackBeats()
 {
-    const auto drums = daw::findDrumTrack(model_);
-    if (!drums) {
-        Q_EMIT beatsTracked(false, tr("No drum track to find the beats on: the beats are tracked on a track named like a "
-                                      "drum stem (\"Drums\", \"Drum Kit\"...)."));
+    const daw::BeatSource source = daw::songBeatSource(model_);
+    if (source.empty()) {
+        Q_EMIT beatsTracked(false, tr("No audio tracks to find the beats in."));
         return;
     }
     const daw::ProjectModel model = model_;
-    const QString drumName = QString::fromStdString(model.findTrack(*drums)->name);
+    const bool mix = !source.drums && source.tracks.size() > 1;
+    // The name kept with the beats, and where the messages say they came from.
+    const QString drumName = mix ? tr("the mix") : QString::fromStdString(source.name);
+    const QString where = mix ? tr("the mix of its %1 tracks").arg(source.tracks.size()) : drumName;
+    const bool withoutDrums = !source.drums;
     const auto token = cancel_->token();
-    Q_EMIT statusMessage(tr("Tracking the beats on %1...").arg(drumName));
+    Q_EMIT statusMessage(tr("Tracking the beats on %1...").arg(where));
     runInBackground([this, model, token] { return daw::songBeats(model, pool_, token); },
-                    [this, drumName](daw::Result<daw::BeatTrack>& beats) {
+                    [this, drumName, where, withoutDrums](daw::Result<daw::BeatTrack>& beats) {
                         if (!beats) {
                             if (beats.error().code != daw::ErrorCode::Cancelled)
                                 Q_EMIT beatsTracked(false, tr("Could not track the beats on %1: %2")
-                                                               .arg(drumName, QString::fromStdString(beats.error().message)));
+                                                               .arg(where, QString::fromStdString(beats.error().message)));
                             return;
                         }
                         if (beats->beats.size() < 2) {
-                            Q_EMIT beatsTracked(false, tr("Too little rhythm on %1 to track the beats.").arg(drumName));
+                            Q_EMIT beatsTracked(false, tr("Too little rhythm on %1 to track the beats.").arg(where));
                             return;
                         }
                         storeBeats(*beats, drumName, true);
@@ -1465,7 +1471,7 @@ void ProjectController::trackBeats()
                         QString message = tr("%1 beats and %2 bars tracked on %3, from %4 to %5 s, at %6 BPM.")
                                               .arg(b.size())
                                               .arg(beats->downbeats.size())
-                                              .arg(drumName)
+                                              .arg(where)
                                               .arg(first, 0, 'f', 1)
                                               .arg(last, 0, 'f', 1)
                                               .arg(model_.tempo.bpm, 0, 'f', 1);
@@ -1473,9 +1479,15 @@ void ProjectController::trackBeats()
                             message += QStringLiteral(" ") + tr("The tempo drifts between %1 and %2 BPM.")
                                                                  .arg(60.0 / slowest, 0, 'f', 1)
                                                                  .arg(60.0 / fastest, 0, 'f', 1);
+                        if (withoutDrums)
+                            message += QStringLiteral("\n\n")
+                                       + tr("There is no drum track, so the beats come from where the music rises and dips, "
+                                            "and the bars from where its sound changes (chords, parts coming in): check the "
+                                            "bar lines against the song. A track named like a drum stem (\"Drums\") is used "
+                                            "first when there is one.");
                         message += QStringLiteral("\n\n") + tr("The timeline's bars and the position now follow the song. "
                                                                "Drums to MIDI and Notes to MIDI use these beats.");
-                        daw::logging::info("tempo", "beats tracked", {{"track", drumName.toStdString()}, {"beats", b.size()},
+                        daw::logging::info("tempo", "beats tracked", {{"track", where.toStdString()}, {"beats", b.size()},
                                                                       {"bars", beats->downbeats.size()}, {"bpm", model_.tempo.bpm}});
                         Q_EMIT beatsTracked(true, message);
                     });

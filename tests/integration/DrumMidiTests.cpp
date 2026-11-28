@@ -15,6 +15,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace daw;
@@ -172,4 +173,50 @@ TEST_CASE("Drums to MIDI refuses a track without rhythm", "[session][drums][midi
     const auto result = trackDrumsToMidi(f.model, f.pool, f.track, {});
     CHECK_FALSE(result.ok());
     CHECK_FALSE(trackDrumsToMidi(f.model, f.pool, TrackId::generate(), {}).ok());
+}
+
+TEST_CASE("Without a drum track, the song's beats come from its tracks played together", "[session][beats]")
+{
+    const DrumGroove g = makeDrumGroove(24, 120.0, 126.0);
+    Fixture f(g.audio);
+    f.model.findTrack(f.track)->name = "Song";
+    f.model.findTrack(f.track)->gainDb = -30.0; // played at unity all the same
+    f.model.findTrack(f.track)->muted = true;
+
+    BeatSource source = songBeatSource(f.model);
+    CHECK_FALSE(source.drums.has_value());
+    REQUIRE(source.tracks.size() == 1);
+    CHECK(source.name == "Song");
+
+    // A second audio track joins the mix; a MIDI track does not.
+    MediaRef other{MediaId::generate(), "Keys", "keys.wav", MediaStorage::Copied, g.audio->sampleRate, 2, g.audio->numFrames(), 1};
+    f.model.media.push_back(other);
+    addMediaAsNewTrack(f.model, other, 0);
+    LoadedMedia loaded;
+    loaded.id = other.id;
+    loaded.original = g.audio;
+    f.pool.put(loaded);
+    MediaRef midi{MediaId::generate(), "Song (notes)", "Exports/Song (notes).mid", MediaStorage::Copied, 48000.0, 2, 48000, 1};
+    f.model.media.push_back(midi);
+    addMediaAsNewTrack(f.model, midi, 0);
+    source = songBeatSource(f.model);
+    CHECK(source.tracks.size() == 2);
+    CHECK(source.name == "the mix");
+
+    auto beats = songBeats(f.model, f.pool);
+    REQUIRE(beats.ok());
+    int matched = 0;
+    for (double truth : g.beats)
+        matched += std::any_of(beats->beats.begin(), beats->beats.end(), [&](double b) { return std::abs(b - truth) <= 0.03; }) ? 1 : 0;
+    INFO(matched << " of " << g.beats.size() << " beats, " << beats->beats.size() << " found");
+    CHECK(matched >= static_cast<int>(0.95 * g.beats.size()));
+    CHECK(beats->beats.size() <= g.beats.size() + 2);
+    CHECK(beats->downbeats.size() >= 20);
+
+    // With a drum track, the beats come from it alone.
+    f.model.findTrack(f.track)->name = "Drums";
+    source = songBeatSource(f.model);
+    REQUIRE(source.drums.has_value());
+    CHECK(*source.drums == f.track);
+    CHECK(source.tracks.empty());
 }

@@ -24,6 +24,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace daw {
 
@@ -62,8 +63,20 @@ Result<DrumMidiResult> trackDrumsToMidi(const ProjectModel& model, const MediaPo
 /// The first track named like a drum stem ("Drums", "Drum Kit"...), if any.
 std::optional<TrackId> findDrumTrack(const ProjectModel& model);
 
-/// The song's beats, tracked on its drum track (findDrumTrack). Fails when
-/// the project has no drum track or it holds too little rhythm.
+/// Where songBeats finds a song's beats: its drum track, or, without one,
+/// its audio tracks played together (not MIDI tracks).
+struct BeatSource {
+    std::optional<TrackId> drums;
+    std::vector<TrackId> tracks; // the audio tracks played together, without a drum track
+    std::string name;            // the drum track's name, the one track's, or "the mix"
+    bool empty() const noexcept { return !drums && tracks.empty(); }
+};
+BeatSource songBeatSource(const ProjectModel& model);
+
+/// The song's beats: tracked on its drum track (findDrumTrack), or, without
+/// one, in its audio tracks played together, each at unity gain
+/// (trackBeatsInAudio). Fails when the project has no audio track or too
+/// little rhythm.
 Result<BeatTrack> songBeats(const ProjectModel& model, const MediaPool& pool, const CancellationToken& cancel = {});
 
 } // namespace daw
